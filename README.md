@@ -22,9 +22,10 @@ git clone https://github.com/Lamb-Project/lamb-kb-server.git
 cd lamb-kb-server
 ```
 
-2. Install the required dependencies:
+2. Set-up and install the required dependencies:
 ```bash
 cd backend
+mkdir static
 pip install -r requirements.txt
 ```
 
