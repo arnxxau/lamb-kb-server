@@ -204,3 +204,7 @@ curl -X PATCH 'http://localhost:9090/files/1' \
   -d '{"status": "completed"}'
 ```
 
+# KNOWN ISSUES
+[Bug](https://github.com/chroma-core/chroma/issues/2731): Chroma 0.5.5 not working on intel CPU macbook #2731
+chroma-core/chroma#2731
+
