@@ -2,18 +2,23 @@
 
 A dedicated knowledge base server designed to provide robust vector database functionality for the LAMB project and to serve as a Model Context Protocol (MCP) server. It uses ChromaDB for vector database storage and FastAPI to create an API that allows the LAMB project to access knowledge databases.
 
+**Authors:** [Marc Alier (@granludo)](https://github.com/granludo) and [Juanan Pereira (@juananpe)](https://github.com/juananpe)
+
+> **Note:** The Model Context Protocol (MCP) functionality is currently a work in progress.
+
 ## Setup and Installation
 
 ### Prerequisites
 
 - Python 3.11 or higher
 - pip (Python package manager)
+- recommended use of Conda or virtual environment 
 
 ### Installation
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/Lamb-Project/lamb-kb-server.git
 cd lamb-kb-server
 ```
 
@@ -22,6 +27,8 @@ cd lamb-kb-server
 cd backend
 pip install -r requirements.txt
 ```
+
+   > **Project Structure:** The repository consists of a `backend` directory that contains the server code. All commands should be run from the `backend` directory.
 
 3. Environment variables:
    - Copy `.env.example` to `.env`
@@ -35,7 +42,7 @@ cd backend
 python start.py
 ```
 
-The server will run on http://localhost:9090 by default.
+The server will run on http://localhost:9090 by default. Edit start.py to change the port. 
 
 ## API Authentication
 
@@ -52,6 +59,7 @@ curl -H 'Authorization: Bearer 0p3n-w3bu!' http://localhost:9090/
 
 - **Collections Management**: Create, view, update and manage document collections
 - **Document Ingestion**: Process and store documents with vectorized content
+- **File Registry**: Maintain a registry of all uploaded and processed files with their metadata and processing status
 - **Similarity Search**: Query collections to find semantically similar content
 - **Static File Serving**: Serve original documents via URL references
 
@@ -112,6 +120,8 @@ When creating collections, you can specify the embedding configuration or use "d
 
 ## API Examples
 
+Full api documentation is available at http://localhost:9090/docs (swagger) and backend/lamb-kb-server-api.md (markdown, wich can be generated with the backend/export_docs.py script ).
+
 ### Creating a Collection
 
 ```bash
@@ -159,8 +169,10 @@ curl -X POST 'http://localhost:9090/collections/1/query' \
 
 The repository includes test scripts to verify functionality:
 
-- **test.py**: A comprehensive test script that demonstrates creating collections, ingesting documents with different chunking strategies, and performing queries
-- **params.json**: Configuration for the test script
+- **test.py**: A comprehensive test script that tests every API endpoint including creating collections, ingesting documents with different chunking strategies, performing queries, and file registry management
+- **params.json**: Configuration for the test script with example data and queries
+
+The test script provides a complete workflow example using the `LambKBClient` class, which can be used as a reference for integrating with the API in your own projects.
 
 To run the tests:
 
@@ -168,3 +180,26 @@ To run the tests:
 cd backend
 python test.py
 ```
+
+## File Registry
+
+The system maintains a registry of all uploaded and processed files with their metadata and processing status:
+
+- **List Files**: View all files in a collection or filter by status
+- **File Status Management**: Track and update file status (processing, completed, failed, deleted)
+- **File Metadata**: Access metadata such as original filename, size, processing statistics, and chunking strategy
+
+Example API calls for file registry management:
+
+```bash
+# List all files in a collection
+curl -X GET 'http://localhost:9090/collections/1/files' \
+  -H 'Authorization: Bearer 0p3n-w3bu!'
+
+# Update file status
+curl -X PATCH 'http://localhost:9090/files/1' \
+  -H 'Authorization: Bearer 0p3n-w3bu!' \
+  -H 'Content-Type: application/json' \
+  -d '{"status": "completed"}'
+```
+
