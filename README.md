@@ -22,9 +22,10 @@ git clone https://github.com/Lamb-Project/lamb-kb-server.git
 cd lamb-kb-server
 ```
 
-2. Install the required dependencies:
+2. Set-up and install the required dependencies:
 ```bash
 cd backend
+mkdir static
 pip install -r requirements.txt
 ```
 
@@ -202,4 +203,8 @@ curl -X PATCH 'http://localhost:9090/files/1' \
   -H 'Content-Type: application/json' \
   -d '{"status": "completed"}'
 ```
+
+# KNOWN ISSUES
+[Bug](https://github.com/chroma-core/chroma/issues/2731): Chroma 0.5.5 not working on intel CPU macbook #2731
+chroma-core/chroma#2731
 
