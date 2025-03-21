@@ -467,12 +467,49 @@ def main():
             files = client.list_files(collection_id)
             logger.info(f"Found {len(files)} files in collection {collection_id}")
             
-            # Display file details
+            # Verify that the number of files matches the number of test files ingested
+            expected_file_count = len(params["test_files"])
+            if len(files) == expected_file_count:
+                logger.info(f"✅ Verification passed: Found expected number of files ({expected_file_count})")
+            else:
+                logger.warning(f"❌ Verification failed: Expected {expected_file_count} files, but found {len(files)}")
+                success = False
+            
+            # Create a dictionary of expected filenames from the test files
+            expected_files = {os.path.basename(file_data["path"]): file_data for file_data in params["test_files"]}
+            found_files = set()
+            
+            # Display file details and verify each file
             for i, file in enumerate(files, 1):
                 logger.info(f"File {i}: ID={file['id']}, Filename={file['original_filename']}, Status={file['status']}")
                 logger.info(f"  Plugin: {file['plugin_name']}, Chunks: {file['document_count']}")
+                
+                # Track which expected files were found
+                found_files.add(file['original_filename'])
+                
+                # Verify file status is 'completed'
+                if file['status'] == 'completed':
+                    logger.info(f"✅ Verification passed: File {file['original_filename']} has 'completed' status")
+                else:
+                    logger.warning(f"❌ Verification failed: File {file['original_filename']} has '{file['status']}' status instead of 'completed'")
+                    success = False
+                
+                # Verify document count is greater than 0
+                if file['document_count'] > 0:
+                    logger.info(f"✅ Verification passed: File {file['original_filename']} has {file['document_count']} documents")
+                else:
+                    logger.warning(f"❌ Verification failed: File {file['original_filename']} has 0 documents")
+                    success = False
             
-            # Update file status if files exist
+            # Verify all expected files were found
+            missing_files = set(expected_files.keys()) - found_files
+            if not missing_files:
+                logger.info("✅ Verification passed: All expected files were found in the registry")
+            else:
+                logger.warning(f"❌ Verification failed: The following files were not found in the registry: {missing_files}")
+                success = False
+            
+            # Test file status updates if files exist
             if files:
                 test_file = files[0]
                 file_id = test_file['id']
@@ -483,10 +520,24 @@ def main():
                 updated_file = client.update_file_status(file_id, new_status)
                 logger.info(f"Updated file status: {updated_file['status']}")
                 
+                # Verify the status was updated correctly
+                if updated_file['status'] == new_status:
+                    logger.info(f"✅ Verification passed: File status was updated to '{new_status}'")
+                else:
+                    logger.warning(f"❌ Verification failed: File status update failed, got '{updated_file['status']}' instead of '{new_status}'")
+                    success = False
+                
                 # Verify the change by listing files with the new status
                 logger.info(f"Listing files with status '{new_status}'...")
                 filtered_files = client.list_files(collection_id, status=new_status)
                 logger.info(f"Found {len(filtered_files)} files with status '{new_status}'")
+                
+                # Verify that filtering by status works
+                if len(filtered_files) > 0:
+                    logger.info(f"✅ Verification passed: Successfully filtered files by status '{new_status}'")
+                else:
+                    logger.warning(f"❌ Verification failed: No files found when filtering by status '{new_status}'")
+                    success = False
                 
                 # Restore original status
                 logger.info(f"Restoring file {file_id} to original status '{original_status}'...")
