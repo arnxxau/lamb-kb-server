@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Query Results - {{ collection.name }} - Lamb KB Explorer</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css">
+    <style>
+        body {
+            padding-top: 20px;
+            padding-bottom: 20px;
+        }
+        .result-card {
+            margin-bottom: 15px;
+            transition: all 0.2s;
+        }
+        .result-card:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .similarity-bar {
+            height: 5px;
+            background-color: #e9ecef;
+            margin-bottom: 10px;
+            border-radius: 5px;
+        }
+        .similarity-indicator {
+            height: 5px;
+            background-color: #0d6efd;
+            border-radius: 5px;
+        }
+        .metadata-table {
+            font-size: 0.85rem;
+        }
+        .query-meta {
+            background-color: #f8f9fa;
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="d-flex align-items-center justify-content-between mb-4">
+            <h1>Lamb Knowledge Base Explorer</h1>
+            <div>
+                <a href="{{ url_for('query_collection', collection_id=collection.id) }}" class="btn btn-outline-secondary me-2">New Query</a>
+                <a href="{{ url_for('view_collection', collection_id=collection.id) }}" class="btn btn-outline-secondary me-2">Back to Collection</a>
+                <a href="{{ url_for('list_collections') }}" class="btn btn-outline-secondary">Collections</a>
+            </div>
+        </header>
+
+        <!-- Flash messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category if category != 'error' else 'danger' }}" role="alert">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="row mb-4">
+            <div class="col">
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="mb-0">Query Results: {{ collection.name }}</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="query-meta">
+                            <div class="row">
+                                <div class="col-md-8">
+                                    <h5>Query</h5>
+                                    <p class="mb-0"><strong>"{{ query_text }}"</strong></p>
+                                </div>
+                                <div class="col-md-2">
+                                    <h5>Top K</h5>
+                                    <p class="mb-0">{{ top_k }}</p>
+                                </div>
+                                <div class="col-md-2">
+                                    <h5>Threshold</h5>
+                                    <p class="mb-0">{{ threshold }}</p>
+                                </div>
+                            </div>
+                            
+                            <div class="mt-2">
+                                <span class="badge {% if include_all_metadata %}bg-success{% else %}bg-secondary{% endif %}">
+                                    {% if include_all_metadata %}
+                                        Include All Metadata: Enabled
+                                    {% else %}
+                                        Include All Metadata: Disabled
+                                    {% endif %}
+                                </span>
+                                
+                                {% if results.timing %}
+                                    <span class="text-muted ms-2">
+                                        <small>Query time: {{ results.timing.total_time if results.timing.total_time else '???' }} seconds</small>
+                                    </span>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        {% if results.count and results.count > 0 %}
+                            <h3>Found {{ results.count }} results</h3>
+                            
+                            <div class="results-container">
+                                {% for result in results.results %}
+                                    <div class="card result-card">
+                                        <div class="card-header d-flex justify-content-between align-items-center">
+                                            <div>
+                                                <span class="badge bg-primary me-2">Score: {{ "%.2f"|format(result.similarity) }}</span>
+                                                {% if result.metadata.source %}
+                                                    <span class="text-muted">Source: {{ result.metadata.source }}</span>
+                                                {% endif %}
+                                            </div>
+                                            <div>
+                                                {% if result.metadata.chunk_unit %}
+                                                    <span class="badge bg-info">Unit: {{ result.metadata.chunk_unit }}</span>
+                                                {% endif %}
+                                                {% if result.metadata.chunk_index is defined %}
+                                                    <span class="badge bg-secondary">Chunk {{ result.metadata.chunk_index + 1 }}{% if result.metadata.chunk_count %}/{{ result.metadata.chunk_count }}{% endif %}</span>
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                        <div class="card-body">
+                                            <div class="similarity-bar">
+                                                <div class="similarity-indicator" style="width: {{ result.similarity * 100 }}%;"></div>
+                                            </div>
+                                            
+                                            <div class="content mb-3">
+                                                <h5>Content:</h5>
+                                                <div class="p-3 bg-light rounded">
+                                                    <pre style="white-space: pre-wrap; font-family: inherit;">{{ result.data }}</pre>
+                                                </div>
+                                            </div>
+                                            
+                                            {% if result.metadata %}
+                                                <div class="metadata">
+                                                    <h6>Metadata:</h6>
+                                                    <table class="table table-sm metadata-table">
+                                                        <tbody>
+                                                            {% for key, value in result.metadata.items() %}
+                                                                <tr>
+                                                                    <th>{{ key }}</th>
+                                                                    <td>{{ value }}</td>
+                                                                </tr>
+                                                            {% endfor %}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        {% else %}
+                            <div class="alert alert-warning">
+                                <h4 class="alert-heading">No results found!</h4>
+                                <p>Your query did not match any documents in the collection with the specified threshold.</p>
+                                <hr>
+                                <p class="mb-0">Try the following:</p>
+                                <ul>
+                                    <li>Adjust your query wording</li>
+                                    <li>Lower the similarity threshold (currently: {{ threshold }})</li>
+                                    <li>{% if include_all_metadata %}Try a different approach{% else %}<strong>Enable "Include all metadata" option</strong> to fix mixed chunking issues{% endif %}</li>
+                                    <li>Check the <a href="{{ url_for('debug_chromadb') }}">ChromaDB debugger</a> to diagnose collection issues</li>
+                                </ul>
+                            </div>
+                        {% endif %}
+                        
+                        <div class="mt-4">
+                            <a href="{{ url_for('query_collection', collection_id=collection.id) }}" class="btn btn-primary me-2">New Query</a>
+                            <a href="{{ url_for('debug_chromadb') }}" class="btn btn-outline-secondary">Debug ChromaDB Collections</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer class="mt-5 text-center text-muted">
+            <p>Lamb Knowledge Base Server Explorer | <a href="https://github.com/Lamb-Project/lamb-kb-server" target="_blank">GitHub</a></p>
+        </footer>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html> 

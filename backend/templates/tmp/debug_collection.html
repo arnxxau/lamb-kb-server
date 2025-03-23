@@ -1,0 +1,32 @@
+    <style>
+        body {
+            padding-top: 20px;
+            padding-bottom: 20px;
+        }
+        pre.json {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .metadata-card {
+            margin-bottom: 20px;
+        }
+        /* Make text boxes scrollable */
+        .scrollable-metadata {
+            max-height: 300px;
+            overflow-y: auto;
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #dee2e6;
+        }
+    </style> 
+
+                            <!-- Sample Metadata -->
+                            <h3>Sample Metadata</h3>
+                            <div class="scrollable-metadata">
+                                <pre class="json">{{ collection_details.sample_metadata | tojson(indent=2) }}</pre>
+                            </div> 

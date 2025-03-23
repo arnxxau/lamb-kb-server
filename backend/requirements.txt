@@ -6,4 +6,9 @@ sqlalchemy>=2.0.0
 chromadb>=0.6.3
 sentence-transformers>=2.2.2
 python-multipart
+<<<<<<< Updated upstream
 markitdown[all]>=0.1.0
+=======
+flask>=2.3.0
+requests>=2.31.0
+>>>>>>> Stashed changes

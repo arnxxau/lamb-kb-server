@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug {{ collection_details.name }} - Lamb KB Explorer</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css">
+    <style>
+        body {
+            padding-top: 20px;
+            padding-bottom: 20px;
+        }
+        pre.json {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+        }
+        .metadata-card {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="d-flex align-items-center justify-content-between mb-4">
+            <h1>ChromaDB Collection Debug</h1>
+            <div>
+                <a href="{{ url_for('debug_chromadb') }}" class="btn btn-outline-secondary me-2">Back to Collections</a>
+                <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">Home</a>
+            </div>
+        </header>
+
+        <!-- Flash messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category if category != 'error' else 'danger' }}" role="alert">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="row mb-4">
+            <div class="col">
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="mb-0">{{ collection_details.name }}</h2>
+                    </div>
+                    <div class="card-body">
+                        {% if collection_details.success %}
+                            <div class="row mb-4">
+                                <div class="col-md-6">
+                                    <h3>Collection Information</h3>
+                                    <table class="table">
+                                        <tr>
+                                            <th>Name:</th>
+                                            <td>{{ collection_details.name }}</td>
+                                        </tr>
+                                        <tr>
+                                            <th>Document Count:</th>
+                                            <td>{{ collection_details.document_count }}</td>
+                                        </tr>
+                                        {% if kb_collection %}
+                                            <tr>
+                                                <th>KB Collection ID:</th>
+                                                <td>{{ kb_collection.id }}</td>
+                                            </tr>
+                                            <tr>
+                                                <th>Owner:</th>
+                                                <td>{{ kb_collection.owner }}</td>
+                                            </tr>
+                                            <tr>
+                                                <th>Created:</th>
+                                                <td>{{ kb_collection.creation_date }}</td>
+                                            </tr>
+                                            <tr>
+                                                <th>Embeddings Model:</th>
+                                                <td>{{ kb_collection.embeddings_model.model }}</td>
+                                            </tr>
+                                            <tr>
+                                                <th>Embedding Vendor:</th>
+                                                <td>{{ kb_collection.embeddings_model.vendor }}</td>
+                                            </tr>
+                                        {% endif %}
+                                    </table>
+                                </div>
+                                <div class="col-md-6">
+                                    <h3>Embedding Dimensions</h3>
+                                    {% if collection_details.embedding_dimensions %}
+                                        <div class="alert alert-info">
+                                            {% set dimensions = collection_details.embedding_dimensions[0] if collection_details.embedding_dimensions else None %}
+                                            <p><strong>Dimension size:</strong> {{ dimensions }}</p>
+                                            
+                                            {% if collection_details.embedding_dimensions|length > 1 %}
+                                                {% set consistent = true %}
+                                                {% for dim in collection_details.embedding_dimensions %}
+                                                    {% if dim != dimensions %}
+                                                        {% set consistent = false %}
+                                                    {% endif %}
+                                                {% endfor %}
+                                                
+                                                {% if consistent %}
+                                                    <div class="alert alert-success">
+                                                        <strong>✓</strong> All embedding dimensions are consistent.
+                                                    </div>
+                                                {% else %}
+                                                    <div class="alert alert-danger">
+                                                        <strong>✗</strong> Warning: Inconsistent embedding dimensions detected!
+                                                        <ul>
+                                                            {% for dim in collection_details.embedding_dimensions %}
+                                                                <li>{{ dim }}</li>
+                                                            {% endfor %}
+                                                        </ul>
+                                                    </div>
+                                                {% endif %}
+                                            {% endif %}
+                                        </div>
+                                    {% else %}
+                                        <div class="alert alert-warning">
+                                            No embedding dimension information available.
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            
+                            <!-- Chunking Analysis -->
+                            <div class="row mb-4">
+                                <div class="col-12">
+                                    <h3>Chunking Analysis</h3>
+                                    
+                                    {% if collection_details.chunking_strategies %}
+                                        <div class="alert {% if collection_details.chunking_strategies|length > 1 %}alert-warning{% else %}alert-success{% endif %}">
+                                            {% if collection_details.chunking_strategies|length > 1 %}
+                                                <strong>⚠️ Mixed chunking strategies detected!</strong> This may cause query issues.
+                                            {% else %}
+                                                <strong>✓</strong> Consistent chunking strategy detected.
+                                            {% endif %}
+                                        </div>
+                                        
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <h5>Chunking Strategies</h5>
+                                                <table class="table table-sm">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Strategy</th>
+                                                            <th>Count</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {% for strategy, count in collection_details.chunking_strategies.items() %}
+                                                            <tr>
+                                                                <td>{{ strategy }}</td>
+                                                                <td>{{ count }}</td>
+                                                            </tr>
+                                                        {% endfor %}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            
+                                            <div class="col-md-6">
+                                                <h5>Metadata Fields</h5>
+                                                <div class="d-flex flex-wrap">
+                                                    {% for key in collection_details.metadata_keys %}
+                                                        <span class="badge bg-secondary me-2 mb-2">{{ key }}</span>
+                                                    {% endfor %}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    {% else %}
+                                        <div class="alert alert-warning">
+                                            No chunking strategy information available.
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            
+                            <!-- Document Stats -->
+                            {% if document_stats %}
+                                <h3>Document Statistics</h3>
+                                
+                                <div class="row mb-4">
+                                    {% if document_stats.by_source %}
+                                        <div class="col-md-6">
+                                            <div class="card metadata-card">
+                                                <div class="card-header">
+                                                    <h5 class="card-title mb-0">Documents by Source</h5>
+                                                </div>
+                                                <div class="card-body">
+                                                    <table class="table table-sm">
+                                                        <thead>
+                                                            <tr>
+                                                                <th>Source</th>
+                                                                <th>Count</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {% for source, count in document_stats.by_source.items() %}
+                                                                <tr>
+                                                                    <td>{{ source }}</td>
+                                                                    <td>{{ count }}</td>
+                                                                </tr>
+                                                            {% endfor %}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if document_stats.by_chunk_unit %}
+                                        <div class="col-md-6">
+                                            <div class="card metadata-card">
+                                                <div class="card-header">
+                                                    <h5 class="card-title mb-0">Documents by Chunk Unit</h5>
+                                                </div>
+                                                <div class="card-body">
+                                                    <table class="table table-sm">
+                                                        <thead>
+                                                            <tr>
+                                                                <th>Chunk Unit</th>
+                                                                <th>Count</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {% for unit, count in document_stats.by_chunk_unit.items() %}
+                                                                <tr>
+                                                                    <td>{{ unit }}</td>
+                                                                    <td>{{ count }}</td>
+                                                                </tr>
+                                                            {% endfor %}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                                
+                                {% if document_stats.by_metadata_presence %}
+                                    <div class="row mb-4">
+                                        <div class="col-12">
+                                            <div class="card">
+                                                <div class="card-header">
+                                                    <h5 class="card-title mb-0">Metadata Field Distribution</h5>
+                                                </div>
+                                                <div class="card-body">
+                                                    <div class="progress mb-3" style="height: 30px;">
+                                                        {% for field, count in document_stats.by_metadata_presence.items() %}
+                                                            {% set percentage = (count / document_stats.total_documents * 100) | round %}
+                                                            <div class="progress-bar bg-{{ loop.index % 5 + 1 | int }}" role="progressbar" 
+                                                                 style="width: {{ percentage }}%;" 
+                                                                 aria-valuenow="{{ percentage }}" aria-valuemin="0" aria-valuemax="100">
+                                                                {{ field }}
+                                                            </div>
+                                                        {% endfor %}
+                                                    </div>
+                                                    <table class="table table-sm">
+                                                        <thead>
+                                                            <tr>
+                                                                <th>Metadata Field</th>
+                                                                <th>Count</th>
+                                                                <th>Percentage</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {% for field, count in document_stats.by_metadata_presence.items() %}
+                                                                <tr>
+                                                                    <td>{{ field }}</td>
+                                                                    <td>{{ count }}</td>
+                                                                    <td>{{ (count / document_stats.total_documents * 100) | round(1) }}%</td>
+                                                                </tr>
+                                                            {% endfor %}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                {% endif %}
+                            {% endif %}
+                            
+                            <!-- Sample Metadata -->
+                            <h3>Sample Metadata</h3>
+                            <pre class="json">{{ collection_details.sample_metadata | tojson(indent=2) }}</pre>
+                            
+                        {% else %}
+                            <div class="alert alert-danger">
+                                <h4 class="alert-heading">Error!</h4>
+                                <p>Failed to retrieve collection details: {{ collection_details.error }}</p>
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Recommendations -->
+        <div class="row mb-4">
+            <div class="col">
+                <div class="card bg-light">
+                    <div class="card-header">
+                        <h3 class="mb-0">Recommendations</h3>
+                    </div>
+                    <div class="card-body">
+                        {% if collection_details.success %}
+                            <ul>
+                                {% if collection_details.chunking_strategies|length > 1 %}
+                                    <li class="text-warning">
+                                        <strong>Mixed chunking detected.</strong> When querying, use the "Include all metadata" option.
+                                    </li>
+                                {% endif %}
+                                
+                                {% if collection_details.embedding_dimensions and collection_details.embedding_dimensions|unique|list|length > 1 %}
+                                    <li class="text-danger">
+                                        <strong>Inconsistent embedding dimensions.</strong> This will cause major issues. Consider recreating the collection with a consistent embedding model.
+                                    </li>
+                                {% endif %}
+                                
+                                <li>
+                                    For best results, use a consistent chunking strategy across all documents in this collection.
+                                </li>
+                                
+                                <li>
+                                    Query with these parameters to see all results:
+                                    <code>{"threshold": 0.0, "include_all_metadata": true}</code>
+                                </li>
+                            </ul>
+                        {% else %}
+                            <p class="text-muted">Unable to provide recommendations due to error retrieving collection details.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer class="mt-5 text-center text-muted">
+            <p>Lamb Knowledge Base Server Explorer | <a href="https://github.com/Lamb-Project/lamb-kb-server" target="_blank">GitHub</a></p>
+        </footer>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Add a filter to Jinja2 for getting unique values from a list
+        // (This won't actually work here, but we're using a workaround in the template)
+        function unique(arr) {
+            return [...new Set(arr)];
+        }
+    </script>
+</body>
+</html> 
