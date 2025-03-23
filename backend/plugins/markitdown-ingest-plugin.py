@@ -15,8 +15,7 @@ class MarkItDownIngestPlugin(IngestPlugin):
     description = "Ingest various file formats by converting to Markdown using MarkItDown with configurable chunking"
 
     supported_file_types = {
-        "pdf", "pptx", "docx", "xlsx", "xls", "jpg", "jpeg", "png", 
-        "gif", "mp3", "wav", "html", "csv", "json", "xml", "zip", "epub"
+        "pdf", "pptx", "docx", "xlsx", "xls", "mp3", "wav", "html", "csv", "json", "xml", "zip", "epub"
     }
     
     def get_parameters(self) -> Dict[str, Dict[str, Any]]:
