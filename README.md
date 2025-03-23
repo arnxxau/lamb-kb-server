@@ -45,6 +45,39 @@ python start.py
 
 The server will run on http://localhost:9090 by default. Edit start.py to change the port. 
 
+### Web Explorer and Diagnostics
+
+The Lamb KB Server includes a web-based UI to explore collections and diagnose potential issues with the ChromaDB database:
+
+```bash
+cd backend
+python lamb_kb_webapp.py
+```
+
+This starts a web server on http://localhost:5000 by default that provides:
+
+1. **Collection Explorer**: Browse, view, and query your knowledge base collections
+2. **Advanced Diagnostics**: Troubleshoot issues between the SQLite registry and ChromaDB storage
+   - Collection mappings verification
+   - UUID consistency checks
+   - Metadata analysis
+   - Segments information
+   - Detection of orphaned data
+
+The diagnostics tool is especially useful when:
+- Collections don't appear correctly in the API
+- You encounter "collection not found" errors
+- Documents aren't being properly stored or retrieved
+- You need to verify database integrity
+
+![Diagnostics Screenshot]
+
+The diagnostics page helps identify and fix common issues like:
+- Case sensitivity mismatches in collection names
+- Missing UUID mappings
+- Orphaned data directories
+- Inconsistencies between the SQLite registry and ChromaDB 
+
 ## API Authentication
 
 All API calls require a Bearer token for authentication. The token must match the `LAMB_API_KEY` environment variable.

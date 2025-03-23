@@ -2,6 +2,23 @@
 
 {% block title %}Advanced Diagnostics{% endblock %}
 
+{% block extra_head %}
+<style>
+    .scrollable-metadata {
+        max-height: 300px;
+        overflow-y: auto;
+        background-color: #f8f9fa;
+        padding: 10px;
+        border-radius: 4px;
+        border: 1px solid #dee2e6;
+    }
+    pre {
+        white-space: pre-wrap;
+        margin: 0;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="container mt-4">
     <h1>Advanced ChromaDB Diagnostics</h1>
@@ -269,7 +286,9 @@
                             <td><code>{{ collection.id }}</code></td>
                             <td>
                                 {% if collection.metadata %}
-                                <pre>{{ collection.metadata|tojson(indent=2) }}</pre>
+                                <div class="scrollable-metadata">
+                                    <pre>{{ collection.metadata|tojson(indent=2) }}</pre>
+                                </div>
                                 {% else %}
                                 <em>No metadata</em>
                                 {% endif %}
