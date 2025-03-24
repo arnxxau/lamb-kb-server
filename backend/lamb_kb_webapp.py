@@ -123,6 +123,32 @@ class LambKBClient:
             data["plugin_params"]["include_metadata"] = True
             
         return self._request("post", f"/collections/{collection_id}/query", json=data)
+        
+    def create_collection(self, collection_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new collection.
+        
+        Args:
+            collection_data: Dictionary with collection properties (name, description, owner, visibility, embeddings_model)
+            
+        Returns:
+            Newly created collection details
+        """
+        return self._request("post", "/collections", json=collection_data)
+        
+    def get_collection_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get a collection by its name.
+        
+        Args:
+            name: Name of the collection to find
+            
+        Returns:
+            Collection details or None if not found
+        """
+        collections = self.list_collections()
+        for col in collections.get("items", []):
+            if col["name"] == name:
+                return col
+        return None
 
 # ChromaDB Helper Class
 class ChromaDBHelper:
@@ -706,7 +732,8 @@ def index():
 
 @app.route('/collections', methods=['GET'])
 def list_collections():
-    """List collections, optionally filtered by owner."""
+    """List all collections."""
+    # Get owner filter if provided in query params
     owner = request.args.get('owner', '')
     try:
         if owner:
@@ -717,6 +744,57 @@ def list_collections():
     except Exception as e:
         flash(f"Error fetching collections: {str(e)}", "error")
         return render_template('collections.html', collections=[], owner=owner)
+
+@app.route('/collections/create', methods=['GET', 'POST'])
+def create_collection():
+    """Create a new collection."""
+    if request.method == 'POST':
+        try:
+            # Get form data
+            collection_data = {
+                "name": request.form.get('name'),
+                "description": request.form.get('description'),
+                "owner": request.form.get('owner'),
+                "visibility": request.form.get('visibility')
+            }
+            
+            # Handle embeddings model configuration
+            embeddings_type = request.form.get('embeddings_type')
+            
+            if embeddings_type == 'default':
+                # Instead of using 'default' which causes issues when env vars aren't set,
+                # use the actual default values that the server uses:
+                embeddings_model = {
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                    "vendor": "local",
+                    "apikey": ""
+                }
+            else:
+                # Custom embeddings configuration
+                embeddings_model = {
+                    "model": request.form.get('model'),
+                    "vendor": request.form.get('vendor'),
+                    "apikey": request.form.get('apikey')
+                }
+                
+                # Add API endpoint if provided
+                api_endpoint = request.form.get('api_endpoint')
+                if api_endpoint:
+                    embeddings_model["api_endpoint"] = api_endpoint
+            
+            # Add embeddings model to collection data
+            collection_data["embeddings_model"] = embeddings_model
+            
+            # Create the collection
+            new_collection = client.create_collection(collection_data)
+            
+            flash(f"Collection '{collection_data['name']}' created successfully!", "success")
+            return redirect(url_for('view_collection', collection_id=new_collection['id']))
+        except Exception as e:
+            flash(f"Error creating collection: {str(e)}", "error")
+    
+    # For GET requests or if there was an error, show the form
+    return render_template('create_collection.html')
 
 @app.route('/collections/<int:collection_id>')
 def view_collection(collection_id):

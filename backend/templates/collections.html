@@ -50,10 +50,13 @@
                                 All Collections
                             {% endif %}
                         </h3>
-                        <form action="{{ url_for('list_collections') }}" method="get" class="d-flex">
-                            <input type="text" class="form-control me-2" name="owner" placeholder="Owner" value="{{ owner }}">
-                            <button type="submit" class="btn btn-primary">Filter</button>
-                        </form>
+                        <div class="d-flex">
+                            <a href="{{ url_for('create_collection') }}" class="btn btn-success me-2">Create Collection</a>
+                            <form action="{{ url_for('list_collections') }}" method="get" class="d-flex">
+                                <input type="text" class="form-control me-2" name="owner" placeholder="Owner" value="{{ owner }}">
+                                <button type="submit" class="btn btn-primary">Filter</button>
+                            </form>
+                        </div>
                     </div>
                     <div class="card-body">
                         {% if collections %}
