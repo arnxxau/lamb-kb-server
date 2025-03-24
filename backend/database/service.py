@@ -135,15 +135,37 @@ class CollectionService:
                 "visibility": visibility.value,
                 "sqlite_id": db_collection.id,
                 "creation_date": datetime.utcnow().isoformat(),
-                "embeddings_model": json.dumps(embeddings_model)
+                "embeddings_model": json.dumps(embeddings_model, ensure_ascii=False)
             }
+            # Make sure we have a valid, non-empty name
+            # ChromaDB has strict naming requirements
         }
         
         # Add embedding function if available
         if embedding_func:
-            collection_params["embedding_function"] = embedding_func
+            # Test the embedding function with a simple string to make sure it works
+            try:
+                print(f"DEBUG: [create_collection] Testing embedding function")
+                test_result = embedding_func(["Test string for embedding"])
+                print(f"DEBUG: [create_collection] Embedding function test successful. Dimension: {len(test_result[0])}")
+                collection_params["embedding_function"] = embedding_func
+            except Exception as e:
+                print(f"ERROR: [create_collection] Embedding function test failed: {str(e)}")
+                print(f"ERROR: [create_collection] Falling back to default embedding function")
+                # Don't add embedding_function to params - let ChromaDB use its default
         
-        chroma_collection = chroma_client.create_collection(**collection_params)
+        # Add detailed debugging for collection creation
+        print(f"DEBUG: [create_collection] Creating ChromaDB collection with name: {name}")
+        print(f"DEBUG: [create_collection] Collection parameters: {collection_params}")
+        
+        try:
+            chroma_collection = chroma_client.create_collection(**collection_params)
+            print(f"DEBUG: [create_collection] Successfully created ChromaDB collection")
+        except Exception as e:
+            print(f"ERROR: [create_collection] Failed to create ChromaDB collection: {str(e)}")
+            import traceback
+            print(f"ERROR: [create_collection] Stack trace:\n{traceback.format_exc()}")
+            raise
         
         return db_collection
     

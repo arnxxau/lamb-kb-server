@@ -169,10 +169,9 @@ def get_embedding_function_by_params(vendor: str, model_name: str, api_key: Opti
             # to add better error handling and timeout management
             openai_ef = embedding_functions.OpenAIEmbeddingFunction(
                 api_key=api_key,
-                model_name=model_name,
-                # Add longer timeout to prevent hanging
-                # OpenAI's default is 600s but can be reduced
-                timeout=60  # Set a 60 second timeout to prevent indefinite hanging
+                model_name=model_name
+                # Note: ChromaDB's OpenAIEmbeddingFunction doesn't support timeout parameter
+                # If timeout control is needed, we would need to create a custom embedding function
             )
             print(f"DEBUG: [get_embedding_function_by_params] Successfully created OpenAI embedding function")
             

@@ -2,6 +2,17 @@ import os
 import json
 from typing import Dict, Any, List, Optional
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    # Load the environment variables from .env file
+    load_dotenv()
+    print(f"INFO: Environment variables loaded from .env file")
+    print(f"INFO: EMBEDDINGS_VENDOR={os.getenv('EMBEDDINGS_VENDOR')}")
+    print(f"INFO: EMBEDDINGS_MODEL={os.getenv('EMBEDDINGS_MODEL')}")
+except ImportError:
+    print("WARNING: python-dotenv not installed, environment variables must be set manually")
+
 from fastapi import Depends, FastAPI, HTTPException, status, Query, File, Form, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -948,7 +959,14 @@ async def create_collection(
         if collection.embeddings_model:
             # Get the model values from the request, keeping 'default' values as is
             # The get_embedding_function will handle resolving 'default' to environment variables
-            model_info = collection.embeddings_model.dict()
+            # Use model_dump() instead of deprecated dict() method
+            model_info = collection.embeddings_model.model_dump()
+            
+            # DEBUG: Check if environment variables are accessible
+            import os
+            print(f"DEBUG: Environment check EMBEDDINGS_VENDOR={os.getenv('EMBEDDINGS_VENDOR')}")
+            print(f"DEBUG: Environment check EMBEDDINGS_MODEL={os.getenv('EMBEDDINGS_MODEL')}")
+            print(f"DEBUG: Environment check EMBEDDINGS_ENDPOINT={os.getenv('EMBEDDINGS_ENDPOINT')}")
                 
             # These fields are now handled during ingestion, no need to modify them here
             # The collection creation just stores the config, validation happens during ingestion
