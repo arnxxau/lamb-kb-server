@@ -13,8 +13,9 @@ from pydantic import BaseModel, Field
 class EmbeddingsModel(BaseModel):
     """Schema for embeddings model configuration."""
     model: str = Field(..., description="Name or path of the embeddings model")
-    endpoint: Optional[str] = Field(None, description="Optional custom API endpoint")
-    apikey: Optional[str] = Field(None, description="Optional API key for the endpoint")
+    vendor: str = Field(..., description="Vendor of the embeddings model (e.g., 'ollama', 'local', 'openai')")
+    api_endpoint: Optional[str] = Field(None, description="Custom API endpoint URL")
+    apikey: Optional[str] = Field(None, description="API key for the endpoint if required")
 
 
 class CollectionBase(BaseModel):

@@ -40,25 +40,11 @@ class CollectionService:
         Returns:
             The created Collection object
         """
-        # Default embeddings model if not provided
+        # embeddings_model=None should never happen from the API
         if embeddings_model is None:
-            embeddings_model = {
-                "model": "sentence-transformers/all-MiniLM-L6-v2",
-                "endpoint": None,
-                "apikey": None
-            }
-        
-        # Create SQLite collection record
-        db_collection = Collection(
-            name=name,
-            owner=owner,
-            description=description,
-            visibility=visibility,
-            embeddings_model=embeddings_model
-        )
-        db.add(db_collection)
-        db.commit()
-        db.refresh(db_collection)
+            error_msg = "No embeddings model configuration provided. This is required for collection creation."
+            print(f"ERROR: [create_collection] {error_msg}")
+            raise ValueError(error_msg)
         
         # Create ChromaDB collection
         chroma_client = get_chroma_client()
@@ -71,14 +57,69 @@ class CollectionService:
             model = "sentence-transformers/all-MiniLM-L6-v2"
             api_key = None
             
-            if embeddings_model:
-                # Use vendor field if available, otherwise fall back to endpoint for backward compatibility
-                vendor = embeddings_model.get("vendor", embeddings_model.get("endpoint", "local"))
-                model = embeddings_model.get("model", "sentence-transformers/all-MiniLM-L6-v2")
-                api_key = embeddings_model.get("apikey")
+            import os
             
-            # Get the embedding function for this vendor/model combo
-            embedding_func = get_embedding_function(vendor, model, api_key)
+            if embeddings_model:
+                # Resolve 'default' values to actual values from environment
+                resolved_config = {}
+                
+                vendor = embeddings_model.get("vendor")
+                if vendor == "default":
+                    vendor = os.getenv("EMBEDDINGS_VENDOR")
+                    if not vendor:
+                        raise ValueError("EMBEDDINGS_VENDOR environment variable not set but 'default' specified")
+                resolved_config["vendor"] = vendor
+                
+                model = embeddings_model.get("model")
+                if model == "default":
+                    model = os.getenv("EMBEDDINGS_MODEL")
+                    if not model:
+                        raise ValueError("EMBEDDINGS_MODEL environment variable not set but 'default' specified")
+                resolved_config["model"] = model
+                
+                # API key is optional (empty string is valid)
+                api_key = embeddings_model.get("apikey")
+                if api_key == "default":
+                    api_key = os.getenv("EMBEDDINGS_APIKEY", "")
+                resolved_config["apikey"] = api_key
+                
+                # API endpoint (required for some vendors like Ollama)
+                api_endpoint = embeddings_model.get("api_endpoint")
+                if api_endpoint == "default":
+                    api_endpoint = os.getenv("EMBEDDINGS_ENDPOINT")
+                    if not api_endpoint and vendor == "ollama":
+                        raise ValueError("EMBEDDINGS_ENDPOINT environment variable not set but 'default' specified for Ollama")
+                if api_endpoint:  # Only add if not None
+                    resolved_config["api_endpoint"] = api_endpoint
+                
+                # Replace the original config with resolved values
+                embeddings_model = resolved_config
+                
+                print(f"DEBUG: [create_collection] Resolved embeddings config: {embeddings_model}")
+                
+            # NOW create the SQLite record with RESOLVED embeddings_model values
+            db_collection = Collection(
+                name=name,
+                owner=owner,
+                description=description,
+                visibility=visibility,
+                embeddings_model=json.dumps(embeddings_model) if isinstance(embeddings_model, dict) else embeddings_model
+            )
+            
+            db.add(db_collection)
+            db.commit()
+            db.refresh(db_collection)
+            
+            # Get the embedding function directly with parameters since collection doesn't exist yet
+            from database.connection import get_embedding_function_by_params
+            
+            # Use the resolved values from embeddings_model, not the original variables
+            embedding_func = get_embedding_function_by_params(
+                vendor=embeddings_model.get("vendor"),
+                model_name=embeddings_model.get("model"),
+                api_key=embeddings_model.get("apikey", ""),
+                api_endpoint=embeddings_model.get("api_endpoint")
+            )
         except ValueError as e:
             # Log the error but continue with default embeddings
             print(f"Warning: Could not create custom embedding function: {str(e)}")

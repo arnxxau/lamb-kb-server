@@ -241,3 +241,22 @@ curl -X PATCH 'http://localhost:9090/files/1' \
 [Bug](https://github.com/chroma-core/chroma/issues/2731): Chroma 0.5.5 not working on intel CPU macbook #2731
 chroma-core/chroma#2731
 
+# Web Application (just for development and debugging)
+
+The repository includes a web application that can be used to explore collections and diagnose potential issues with the ChromaDB database and consistency with the sqlite lamb-kb-server.db database.
+
+To run the web application:
+
+```bash
+  cd backend
+  python lamb_kb_webapp.py
+  ```
+
+  
+go to http://localhost:9091 to access the web application 
+Warning, this app runs on port 9091, different from the server port 9090 
+Warning, this app is not production ready and is only for development and debugging purposes 
+
+
+
+

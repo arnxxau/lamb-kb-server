@@ -11,6 +11,7 @@
     "embeddings_model": {
       "model": "default",
       "vendor": "default",
+      "api_endpoint": "default",
       "apikey": "default"
     }
   },

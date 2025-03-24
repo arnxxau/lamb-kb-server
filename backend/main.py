@@ -63,11 +63,13 @@ class FileRegistryResponse(BaseModel):
 API_KEY = os.getenv("LAMB_API_KEY", "0p3n-w3bu!")
 
 # Get default embeddings model configuration from environment variables
-# For local models, the default is a sentence transformer model
+# Default to using Ollama with nomic-embed-text model
 # For OpenAI models, the environment variables should be set accordingly
-DEFAULT_EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-DEFAULT_EMBEDDINGS_VENDOR = os.getenv("EMBEDDINGS_VENDOR", "local")  # 'local' or 'openai'
+DEFAULT_EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "nomic-embed-text")
+DEFAULT_EMBEDDINGS_VENDOR = os.getenv("EMBEDDINGS_VENDOR", "ollama")  # 'ollama', 'local', or 'openai'
 DEFAULT_EMBEDDINGS_APIKEY = os.getenv("EMBEDDINGS_APIKEY", "")
+# Default endpoint for Ollama
+DEFAULT_EMBEDDINGS_ENDPOINT = os.getenv("EMBEDDINGS_ENDPOINT", "http://localhost:11434/api/embeddings")
 
 # Response models
 class HealthResponse(BaseModel):
@@ -944,24 +946,36 @@ async def create_collection(
         # Handle the embeddings model configuration
         embeddings_model = {}
         if collection.embeddings_model:
-            # Get the model values from the request or use defaults when 'default' is specified
+            # Get the model values from the request, keeping 'default' values as is
+            # The get_embedding_function will handle resolving 'default' to environment variables
             model_info = collection.embeddings_model.dict()
-            
-            # Replace 'default' values with environment variable values
-            if model_info.get('model') == 'default':
-                model_info['model'] = DEFAULT_EMBEDDINGS_MODEL
                 
-            # Support both vendor and endpoint for backward compatibility
-            if model_info.get('vendor') == 'default':
-                model_info['vendor'] = DEFAULT_EMBEDDINGS_VENDOR
-            elif model_info.get('endpoint') == 'default':
-                model_info['vendor'] = DEFAULT_EMBEDDINGS_VENDOR
-                # Remove endpoint to avoid confusion, as we're standardizing on vendor
-                if 'endpoint' in model_info:
-                    del model_info['endpoint']
+            # These fields are now handled during ingestion, no need to modify them here
+            # The collection creation just stores the config, validation happens during ingestion
+            # We'll pre-validate only if the config doesn't use 'default' values
+            if model_info.get('model') != 'default' and model_info.get('vendor') != 'default':
+                try:
+                    # Create a temporary DB collection record for validation
+                    from database.models import Collection
+                    temp_collection = Collection(id=-1, name="temp_validation", 
+                                                owner="system", description="Validation only", 
+                                                embeddings_model=json.dumps(model_info))
                     
-            if model_info.get('apikey') == 'default':
-                model_info['apikey'] = DEFAULT_EMBEDDINGS_APIKEY
+                    # This will be executed later when we validate the collection API
+                    # Commented out for now to avoid circular imports
+                    # from database.connection import get_embedding_function_by_params
+                    # get_embedding_function_by_params(
+                    #     vendor=model_info.get('vendor'),
+                    #     model_name=model_info.get('model'),
+                    #     api_key=model_info.get('apikey'),
+                    #     api_endpoint=model_info.get('api_endpoint')
+                    # )
+                except Exception as emb_error:
+                    print(f"ERROR: Embeddings model validation failed: {str(emb_error)}")
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Embeddings model validation failed: {str(emb_error)}. Please check your configuration."
+                    )
                 
             embeddings_model = model_info
         

@@ -334,7 +334,7 @@ class IngestionService:
             db: Database session
             collection_id: ID of the collection
             documents: List of document chunks with metadata
-            embeddings_function: Optional custom embeddings function
+            embeddings_function: Optional custom embeddings function (IGNORED - will always use collection config)
             
         Returns:
             Status information about the ingestion
@@ -357,37 +357,42 @@ class IngestionService:
         
         print(f"DEBUG: [add_documents_to_collection] Found collection: {db_collection.name}")
         
-        # Properly access the embeddings configuration from the JSON field
+        # Store the embedding config for logging/debugging
         embedding_config = json.loads(db_collection.embeddings_model) if isinstance(db_collection.embeddings_model, str) else db_collection.embeddings_model
-        model = embedding_config.get("model", "sentence-transformers/all-MiniLM-L6-v2")
-        # Use vendor field if available, otherwise fall back to endpoint for backward compatibility
-        vendor = embedding_config.get("vendor", embedding_config.get("endpoint", "local"))
-        api_key = embedding_config.get("apikey")
+        print(f"DEBUG: [add_documents_to_collection] Embedding config: {embedding_config}")
         
-        print(f"DEBUG: [add_documents_to_collection] Embedding config - Model: {model}, Vendor: {vendor}, API Key present: {bool(api_key)}")
-        
-        # Get ChromaDB collection
+        # Get ChromaDB client
         print(f"DEBUG: [add_documents_to_collection] Getting ChromaDB client")
         chroma_client = get_chroma_client()
+        
+        # Get the embedding function for this collection using just the collection ID
+        collection_embedding_function = None
+        try:
+            print(f"DEBUG: [add_documents_to_collection] Creating embedding function from collection ID")
+            # Simply pass the collection ID to get the embedding function
+            collection_embedding_function = get_embedding_function(db_collection.id)
+            print(f"DEBUG: [add_documents_to_collection] Created embedding function: {collection_embedding_function is not None}")
+        except Exception as ef_e:
+            print(f"DEBUG: [add_documents_to_collection] ERROR creating embedding function: {str(ef_e)}")
+            import traceback
+            print(f"DEBUG: [add_documents_to_collection] Stack trace:\n{traceback.format_exc()}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create embedding function: {str(ef_e)}"
+            )
         
         try:
             print(f"DEBUG: [add_documents_to_collection] Getting ChromaDB collection: {db_collection.name}")
             try:
                 # Try to get the existing ChromaDB collection
-                chroma_collection = chroma_client.get_collection(name=db_collection.name)
+                chroma_collection = chroma_client.get_collection(
+                    name=db_collection.name,
+                    embedding_function=collection_embedding_function  # Use the same embedding function for consistency
+                )
                 print(f"DEBUG: [add_documents_to_collection] ChromaDB collection retrieved successfully")
             except Exception as collection_e:
                 print(f"DEBUG: [add_documents_to_collection] Collection not found in ChromaDB: {str(collection_e)}")
-                print(f"DEBUG: [add_documents_to_collection] Attempting to create ChromaDB collection: {db_collection.name}")
-                
-                # Create embedding function for the collection
-                embedding_func = None
-                try:
-                    embedding_func = get_embedding_function(vendor, model, api_key)
-                    print(f"DEBUG: [add_documents_to_collection] Created embedding function for new collection")
-                except Exception as ef_e:
-                    print(f"DEBUG: [add_documents_to_collection] WARNING: Could not create embedding function: {str(ef_e)}")
-                    print(f"DEBUG: [add_documents_to_collection] Will use default embedding function")
+                print(f"DEBUG: [add_documents_to_collection] Creating ChromaDB collection: {db_collection.name}")
                 
                 # Prepare metadata for the new ChromaDB collection
                 collection_metadata = {
@@ -399,18 +404,12 @@ class IngestionService:
                     "embeddings_model": json.dumps(embedding_config) if isinstance(embedding_config, dict) else embedding_config
                 }
                 
-                # Create collection params
-                collection_params = {
-                    "name": db_collection.name,
-                    "metadata": collection_metadata
-                }
-                
-                # Add embedding function if we have one
-                if embedding_func:
-                    collection_params["embedding_function"] = embedding_func
-                    
-                # Create the collection
-                chroma_collection = chroma_client.create_collection(**collection_params)
+                # Create the collection with the embedding function from collection settings
+                chroma_collection = chroma_client.create_collection(
+                    name=db_collection.name,
+                    metadata=collection_metadata,
+                    embedding_function=collection_embedding_function
+                )
                 print(f"DEBUG: [add_documents_to_collection] Successfully created ChromaDB collection: {db_collection.name}")
         except Exception as e:
             print(f"DEBUG: [add_documents_to_collection] ERROR with ChromaDB collection: {str(e)}")
@@ -443,76 +442,38 @@ class IngestionService:
         # Add documents to ChromaDB collection
         try:
             print(f"DEBUG: [add_documents_to_collection] Adding documents to ChromaDB")
-            print(f"DEBUG: [add_documents_to_collection] First document text: {texts[0][:100]}...")
+            if len(texts) > 0:
+                print(f"DEBUG: [add_documents_to_collection] First document sample: {texts[0][:100]}...")
             
-            # This is likely where hanging occurs - add detailed timing
+            # Add timing for performance monitoring
             import time
             start_time = time.time()
-            print(f"DEBUG: [add_documents_to_collection] Starting ChromaDB add operation: {start_time}")
             
-            # Add a timeout mechanism to prevent indefinite hanging
-            # Create a lower-level debug display of what's happening with embeddings
+            # Add documents in smaller batches for better error handling and progress tracking
+            batch_size = 5
             
-            # Generate embedding function from collection settings if not provided
-            if embeddings_function is None:
-                try:
-                    print(f"DEBUG: [add_documents_to_collection] Creating embedding function from collection settings")
-                    # Get embedding function using the parsed configuration from above
-                    embeddings_function = get_embedding_function(vendor, model, api_key)
-                    print(f"DEBUG: [add_documents_to_collection] Successfully created embedding function: {embeddings_function is not None}")
-                except Exception as e:
-                    print(f"DEBUG: [add_documents_to_collection] WARNING: Error creating embedding function: {str(e)}")
-                    print(f"DEBUG: [add_documents_to_collection] Will use ChromaDB default embedding function")
-            
-            print(f"DEBUG: [add_documents_to_collection] Adding with embeddings_function: {embeddings_function is not None}")
-            
-            # Check if we're using API-based embeddings (like OpenAI) which might be slow
-            embedding_info = "Using custom embeddings" if embeddings_function else "Using collection default"
-            print(f"DEBUG: [add_documents_to_collection] Embedding method: {embedding_info}")
-            
-            # Add documents with a smaller batch size if there are many
-            if len(ids) > 10:
-                print(f"DEBUG: [add_documents_to_collection] Processing in batches due to large document count")
-                batch_size = 5
-                for i in range(0, len(ids), batch_size):
-                    print(f"DEBUG: [add_documents_to_collection] Processing batch {i//batch_size + 1}/{(len(ids) + batch_size - 1)//batch_size}")
-                    batch_end = min(i + batch_size, len(ids))
-                    # Add the embedding function if we have one
-                    add_params = {
-                        "ids": ids[i:batch_end],
-                        "documents": texts[i:batch_end],
-                        "metadatas": metadatas[i:batch_end]
-                    }
-                    
-                    # Only add embedding_function if we actually have one
-                    if embeddings_function is not None:
-                        add_params["embedding_function"] = embeddings_function
-                        print(f"DEBUG: [add_documents_to_collection] Using custom embedding function for batch {i//batch_size + 1}")
-                    
-                    # Add the documents with potential custom embedding function
-                    chroma_collection.add(**add_params)
-                    print(f"DEBUG: [add_documents_to_collection] Batch {i//batch_size + 1} completed")
-            else:
-                # Add the embedding function if we have one
-                add_params = {
-                    "ids": ids,
-                    "documents": texts,
-                    "metadatas": metadatas
-                }
+            for i in range(0, len(ids), batch_size):
+                batch_end = min(i + batch_size, len(ids))
                 
-                # Only add embedding_function if we actually have one
-                if embeddings_function is not None:
-                    add_params["embedding_function"] = embeddings_function
-                    print(f"DEBUG: [add_documents_to_collection] Using custom embedding function for single batch")
+                print(f"DEBUG: [add_documents_to_collection] Processing batch {i//batch_size + 1}/{(len(ids) + batch_size - 1)//batch_size}")
                 
-                # Add the documents with potential custom embedding function
-                chroma_collection.add(**add_params)
+                batch_start_time = time.time()
+                
+                # Add documents - ALWAYS use the collection embedding function for consistency
+                chroma_collection.add(
+                    ids=ids[i:batch_end],
+                    documents=texts[i:batch_end],
+                    metadatas=metadatas[i:batch_end],
+                )
+                
+                batch_end_time = time.time()
+                print(f"DEBUG: [add_documents_to_collection] Batch {i//batch_size + 1} completed in {batch_end_time - batch_start_time:.2f} seconds")
             
             end_time = time.time()
             print(f"DEBUG: [add_documents_to_collection] ChromaDB add operation completed in {end_time - start_time:.2f} seconds")
             
             return {
-                "collection_id": collection_id,  # Add collection_id to the response
+                "collection_id": collection_id,
                 "collection_name": db_collection.name,
                 "documents_added": len(documents),
                 "success": True
