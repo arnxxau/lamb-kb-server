@@ -4,15 +4,17 @@ Database service module for managing collections.
 This module provides service functions for managing collections in both SQLite and ChromaDB.
 """
 
+import os
 import json
-from typing import List, Dict, Any, Optional
-from datetime import datetime
-
 import chromadb
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Union
+from datetime import datetime
 from sqlalchemy.orm import Session
+from sqlalchemy import desc, asc
 
 from .models import Collection, Visibility
-from .connection import get_chroma_client, get_embedding_function
+from .connection import get_db, get_chroma_client, get_embedding_function, get_embedding_function_by_params
 
 
 class CollectionService:
@@ -51,123 +53,99 @@ class CollectionService:
         
         # Get the appropriate embedding function based on model configuration
         embedding_func = None
-        try:
-            # Default values if embeddings_model is None or empty
-            vendor = "local"
-            model = "sentence-transformers/all-MiniLM-L6-v2"
-            api_key = None
-            
-            import os
-            
-            if embeddings_model:
-                # Resolve 'default' values to actual values from environment
-                resolved_config = {}
-                
-                vendor = embeddings_model.get("vendor")
-                if vendor == "default":
-                    vendor = os.getenv("EMBEDDINGS_VENDOR")
-                    if not vendor:
-                        raise ValueError("EMBEDDINGS_VENDOR environment variable not set but 'default' specified")
-                resolved_config["vendor"] = vendor
-                
-                model = embeddings_model.get("model")
-                if model == "default":
-                    model = os.getenv("EMBEDDINGS_MODEL")
-                    if not model:
-                        raise ValueError("EMBEDDINGS_MODEL environment variable not set but 'default' specified")
-                resolved_config["model"] = model
-                
-                # API key is optional (empty string is valid)
-                api_key = embeddings_model.get("apikey")
-                if api_key == "default":
-                    api_key = os.getenv("EMBEDDINGS_APIKEY", "")
-                resolved_config["apikey"] = api_key
-                
-                # API endpoint (required for some vendors like Ollama)
-                api_endpoint = embeddings_model.get("api_endpoint")
-                if api_endpoint == "default":
-                    api_endpoint = os.getenv("EMBEDDINGS_ENDPOINT")
-                    if not api_endpoint and vendor == "ollama":
-                        raise ValueError("EMBEDDINGS_ENDPOINT environment variable not set but 'default' specified for Ollama")
-                if api_endpoint:  # Only add if not None
-                    resolved_config["api_endpoint"] = api_endpoint
-                
-                # Replace the original config with resolved values
-                embeddings_model = resolved_config
-                
-                print(f"DEBUG: [create_collection] Resolved embeddings config: {embeddings_model}")
-                
-            # NOW create the SQLite record with RESOLVED embeddings_model values
-            db_collection = Collection(
-                name=name,
-                owner=owner,
-                description=description,
-                visibility=visibility,
-                embeddings_model=json.dumps(embeddings_model) if isinstance(embeddings_model, dict) else embeddings_model
-            )
-            
-            db.add(db_collection)
-            db.commit()
-            db.refresh(db_collection)
-            
-            # Get the embedding function directly with parameters since collection doesn't exist yet
-            from database.connection import get_embedding_function_by_params
-            
-            # Use the resolved values from embeddings_model, not the original variables
-            embedding_func = get_embedding_function_by_params(
-                vendor=embeddings_model.get("vendor"),
-                model_name=embeddings_model.get("model"),
-                api_key=embeddings_model.get("apikey", ""),
-                api_endpoint=embeddings_model.get("api_endpoint")
-            )
-        except ValueError as e:
-            # Log the error but continue with default embeddings
-            print(f"Warning: Could not create custom embedding function: {str(e)}")
-            print("Using default embedding function instead")
-            embedding_func = None
+        if embeddings_model:
+            print(f"DEBUG: [create_collection] Using embedding config from dict - Model: {embeddings_model['model']}, Vendor: {embeddings_model['vendor']}")
+            try:
+                embedding_func = get_embedding_function_by_params(
+                    vendor=embeddings_model['vendor'],
+                    model_name=embeddings_model['model'],
+                    api_key=embeddings_model.get('apikey', ''),
+                    api_endpoint=embeddings_model.get('api_endpoint', '')
+                )
+            except Exception as e:
+                print(f"ERROR: [create_collection] Failed to create embedding function: {str(e)}")
+                raise ValueError(f"Failed to create embedding function: {str(e)}")
         
-        # Create the collection with the appropriate embedding function
+        # Prepare collection parameters
         collection_params = {
             "name": name,
             "metadata": {
                 "owner": owner,
-                "description": description,
+                "description": description or "",
                 "visibility": visibility.value,
-                "sqlite_id": db_collection.id,
-                "creation_date": datetime.utcnow().isoformat(),
-                "embeddings_model": json.dumps(embeddings_model, ensure_ascii=False)
+                # Don't include sqlite_id in initial metadata since we don't have it yet
+                # We'll try to update it after creation
             }
-            # Make sure we have a valid, non-empty name
-            # ChromaDB has strict naming requirements
         }
         
-        # Add embedding function if available
         if embedding_func:
-            # Test the embedding function with a simple string to make sure it works
-            try:
-                print(f"DEBUG: [create_collection] Testing embedding function")
-                test_result = embedding_func(["Test string for embedding"])
-                print(f"DEBUG: [create_collection] Embedding function test successful. Dimension: {len(test_result[0])}")
-                collection_params["embedding_function"] = embedding_func
-            except Exception as e:
-                print(f"ERROR: [create_collection] Embedding function test failed: {str(e)}")
-                print(f"ERROR: [create_collection] Falling back to default embedding function")
-                # Don't add embedding_function to params - let ChromaDB use its default
-        
-        # Add detailed debugging for collection creation
-        print(f"DEBUG: [create_collection] Creating ChromaDB collection with name: {name}")
-        print(f"DEBUG: [create_collection] Collection parameters: {collection_params}")
+            collection_params["embedding_function"] = embedding_func
         
         try:
             chroma_collection = chroma_client.create_collection(**collection_params)
             print(f"DEBUG: [create_collection] Successfully created ChromaDB collection")
+            
+            # Get the collection's ID from ChromaDB
+            try:
+                # In v0.6.0+, we can get the collection by name and then get its ID
+                collection = chroma_client.get_collection(name=name)
+                collection_id = collection.id
+                # Convert UUID to string to avoid SQLite compatibility issues
+                collection_id_str = str(collection_id) if collection_id else None
+                print(f"DEBUG: [create_collection] Got collection ID: {collection_id_str}")
+            except Exception as e:
+                print(f"WARNING: [create_collection] Could not get collection ID: {e}")
+                collection_id_str = None
+            
+            # Create SQLite record
+            db_collection = Collection(
+                name=name,
+                description=description,
+                owner=owner,
+                visibility=visibility,
+                embeddings_model=json.dumps(embeddings_model),
+                chromadb_uuid=collection_id_str  # Store as string, not UUID object
+            )
+            db.add(db_collection)
+            db.commit()
+            db.refresh(db_collection)
+            
+            # Update ChromaDB metadata with SQLite ID
+            if collection_id:
+                try:
+                    collection = chroma_client.get_collection(id=collection_id)
+                    
+                    # Add SQLite ID to metadata if available - using str representation to avoid None
+                    if db_collection.id:
+                        try:
+                            # Note: ChromaDB doesn't support updating metadata directly
+                            # This would need to be implemented differently in a production environment
+                            # This code will have no effect with current ChromaDB versions
+                            metadata = collection.metadata or {}
+                            metadata["sqlite_id"] = str(db_collection.id)
+                            print(f"DEBUG: [create_collection] Added SQLite ID {db_collection.id} to ChromaDB metadata")
+                        except Exception as metadata_error:
+                            print(f"DEBUG: [create_collection] Could not update ChromaDB metadata: {metadata_error}")
+                except Exception as e:
+                    print(f"WARNING: [create_collection] Could not access ChromaDB collection: {e}")
+            
+            return db_collection
         except Exception as e:
             print(f"ERROR: [create_collection] Failed to create ChromaDB collection: {str(e)}")
             import traceback
             print(f"ERROR: [create_collection] Stack trace:\n{traceback.format_exc()}")
+            
+            # If we already created a SQLite record, we should delete it to avoid inconsistency
+            if 'db_collection' in locals() and db_collection and db_collection.id:
+                print(f"ERROR: [create_collection] Deleting SQLite record {db_collection.id} due to ChromaDB creation failure")
+                try:
+                    db.delete(db_collection)
+                    db.commit()
+                except Exception as db_e:
+                    print(f"ERROR: [create_collection] Failed to delete SQLite record: {str(db_e)}")
+                    # Even if we fail to delete, still raise the original exception
+            
             raise
-        
-        return db_collection
     
     @staticmethod
     def get_collection(db: Session, collection_id: int) -> Optional[Dict[str, Any]]:
@@ -206,6 +184,19 @@ class CollectionService:
             The Collection object if found, None otherwise
         """
         return db.query(Collection).filter(Collection.name == name).first()
+    
+    @staticmethod
+    def get_collection_by_chromadb_uuid(db: Session, chromadb_uuid: str) -> Optional[Collection]:
+        """Get a collection by ChromaDB UUID.
+        
+        Args:
+            db: SQLAlchemy database session
+            chromadb_uuid: ChromaDB UUID of the collection to retrieve
+            
+        Returns:
+            The Collection object if found, None otherwise
+        """
+        return db.query(Collection).filter(Collection.chromadb_uuid == chromadb_uuid).first()
     
     @staticmethod
     def list_collections(

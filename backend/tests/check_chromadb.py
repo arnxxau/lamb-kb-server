@@ -28,14 +28,29 @@ def check_chromadb(path):
         logger.info(f"Connected to ChromaDB at {path}")
         logger.info(f"Found {len(collections)} collections:")
         
-        for i, col in enumerate(collections, 1):
-            logger.info(f"  {i}. {col.name}")
-            # Try to get a count
-            try:
-                count = col.count()
-                logger.info(f"     Documents: {count}")
-            except Exception as e:
-                logger.error(f"     Error getting count: {e}")
+        # Handle ChromaDB v0.6.0+ API change: list_collections() now returns list of strings
+        if collections and isinstance(collections[0], str):
+            logger.info("Using ChromaDB v0.6.0+ API (collections are strings)")
+            for i, collection_name in enumerate(collections, 1):
+                logger.info(f"  {i}. {collection_name}")
+                # Try to get a count
+                try:
+                    collection = client.get_collection(name=collection_name)
+                    count = collection.count()
+                    logger.info(f"     Documents: {count}")
+                except Exception as e:
+                    logger.error(f"     Error getting count: {e}")
+        else:
+            # Older ChromaDB API
+            logger.info("Using older ChromaDB API (collections are objects)")
+            for i, col in enumerate(collections, 1):
+                try:
+                    logger.info(f"  {i}. {col.name}")
+                    # Try to get a count
+                    count = col.count()
+                    logger.info(f"     Documents: {count}")
+                except Exception as e:
+                    logger.error(f"     Error accessing collection: {e}")
         
         # Check directory structure
         logger.info(f"Directory contents of {path}:")

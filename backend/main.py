@@ -30,13 +30,15 @@ from schemas.collection import (
     CollectionCreate, 
     CollectionUpdate, 
     CollectionResponse, 
-    CollectionList
+    CollectionList,
+    EmbeddingsModel
 )
 
 # Import ingestion modules
 from plugins.base import discover_plugins
 from services.ingestion import IngestionService
 from services.query import QueryService
+from services.collections import CollectionsService
 from schemas.ingestion import (
     IngestionPluginInfo,
     IngestFileRequest,
@@ -522,23 +524,27 @@ async def upload_file(
             status_code=404,
             detail=f"Collection with ID {collection_id} not found in database"
         )
+    
+    # Get collection name - handle both dict-like and attribute access
+    collection_name = collection['name'] if isinstance(collection, dict) else collection.name
+    collection_owner = collection['owner'] if isinstance(collection, dict) else collection.owner
         
     # Also verify ChromaDB collection exists
     try:
         chroma_client = get_chroma_client()
-        chroma_collection = chroma_client.get_collection(name=collection.name)
+        chroma_collection = chroma_client.get_collection(name=collection_name)
     except Exception as e:
         raise HTTPException(
             status_code=404,
-            detail=f"Collection '{collection.name}' exists in database but not in ChromaDB. Please recreate the collection."
+            detail=f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection."
         )
     
     # Save the file
     try:
         file_info = IngestionService.save_uploaded_file(
             file=file,
-            owner=collection.owner,
-            collection_name=collection.name
+            owner=collection_owner,
+            collection_name=collection_name
         )
         
         return {
@@ -547,7 +553,7 @@ async def upload_file(
             "file_name": file.filename,
             "original_filename": file_info["original_filename"],
             "collection_id": collection_id,
-            "collection_name": collection.name
+            "collection_name": collection_name
         }
     except Exception as e:
         raise HTTPException(
@@ -620,15 +626,18 @@ async def ingest_file(
             status_code=404,
             detail=f"Collection with ID {collection_id} not found in database"
         )
+    
+    # Get collection name - handle both dict-like and attribute access
+    collection_name = collection['name'] if isinstance(collection, dict) else collection.name
         
     # Also verify ChromaDB collection exists
     try:
         chroma_client = get_chroma_client()
-        chroma_collection = chroma_client.get_collection(name=collection.name)
+        chroma_collection = chroma_client.get_collection(name=collection_name)
     except Exception as e:
         raise HTTPException(
             status_code=404,
-            detail=f"Collection '{collection.name}' exists in database but not in ChromaDB. Please recreate the collection."
+            detail=f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection."
         )
     
     # Parse plugin parameters
@@ -799,14 +808,17 @@ async def ingest_file_to_collection(
             detail=f"Collection with ID {collection_id} not found in database"
         )
         
+    # Get collection name - handle both dict-like and attribute access
+    collection_name = collection['name'] if isinstance(collection, dict) else collection.name
+        
     # Also verify ChromaDB collection exists
     try:
         chroma_client = get_chroma_client()
-        chroma_collection = chroma_client.get_collection(name=collection.name)
+        chroma_collection = chroma_client.get_collection(name=collection_name)
     except Exception as e:
         raise HTTPException(
             status_code=404,
-            detail=f"Collection '{collection.name}' exists in database but not in ChromaDB. Please recreate the collection."
+            detail=f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection."
         )
     
     # Check if plugin exists
@@ -830,8 +842,8 @@ async def ingest_file_to_collection(
         # Step 1: Upload file
         file_info = IngestionService.save_uploaded_file(
             file=file,
-            owner=collection.owner,
-            collection_name=collection.name
+            owner=collection["owner"] if isinstance(collection, dict) else collection.owner,
+            collection_name=collection_name
         )
         file_path = file_info["file_path"]
         
@@ -858,7 +870,7 @@ async def ingest_file_to_collection(
             original_filename=file_info["original_filename"],
             plugin_name=plugin_name,
             plugin_params=params,
-            owner=collection.owner,
+            owner=collection["owner"] if isinstance(collection, dict) else collection.owner,
             document_count=len(documents),
             content_type=file.content_type
         )
@@ -888,10 +900,7 @@ async def ingest_file_to_collection(
     
     Example:
     ```bash
-    curl -X POST 'http://localhost:9090/collections' \
-      -H 'Authorization: Bearer 0p3n-w3bu!' \
-      -H 'Content-Type: application/json' \
-      -d '{
+    curl -X POST 'http://localhost:9090/collections'       -H 'Authorization: Bearer 0p3n-w3bu!'       -H 'Content-Type: application/json'       -d '{
         "name": "my-knowledge-base",
         "description": "My first knowledge base",
         "owner": "user1",
@@ -899,6 +908,7 @@ async def ingest_file_to_collection(
         "embeddings_model": {
           "model": "default",
           "vendor": "default",
+          "endpoint":"default",
           "apikey": "default"
         }
         
@@ -906,9 +916,9 @@ async def ingest_file_to_collection(
         # "embeddings_model": {
         #   "model": "text-embedding-3-small",
         #   "vendor": "openai",
+        #   "endpoint":"https://api.openai.com/v1/embeddings"
         #   "apikey": "your-openai-key-here"
         # }
-      }'
     ```
     """,
     tags=["Collections"],
@@ -938,91 +948,64 @@ async def create_collection(
     Raises:
         HTTPException: If collection creation fails
     """
-    # Check if collection with this name already exists
-    existing = CollectionService.get_collection_by_name(db, collection.name)
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Collection with name '{collection.name}' already exists"
-        )
-    
-    # Convert visibility string to enum
-    try:
-        visibility = Visibility(collection.visibility)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid visibility value: {collection.visibility}. Must be 'private' or 'public'."
-        )
-    
-    # Create the collection
-    try:
-        # Handle the embeddings model configuration
-        embeddings_model = {}
-        if collection.embeddings_model:
-            # Get the model values from the request, keeping 'default' values as is
-            # The get_embedding_function will handle resolving 'default' to environment variables
-            # Use model_dump() instead of deprecated dict() method
-            model_info = collection.embeddings_model.model_dump()
+    # Resolve default values for embeddings_model before passing to service
+    if collection.embeddings_model:
+        model_info = collection.embeddings_model.model_dump()
+        resolved_config = {}
+        
+        # Resolve vendor
+        vendor = model_info.get("vendor")
+        if vendor == "default":
+            vendor = os.getenv("EMBEDDINGS_VENDOR")
+            if not vendor:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="EMBEDDINGS_VENDOR environment variable not set but 'default' specified"
+                )
+        resolved_config["vendor"] = vendor
+        
+        # Resolve model
+        model = model_info.get("model")
+        if model == "default":
+            model = os.getenv("EMBEDDINGS_MODEL")
+            if not model:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="EMBEDDINGS_MODEL environment variable not set but 'default' specified"
+                )
+        resolved_config["model"] = model
+        
+        # Resolve API key (optional)
+        api_key = model_info.get("apikey")
+        if api_key == "default":
+            api_key = os.getenv("EMBEDDINGS_APIKEY", "")
+        
+        # Only log whether we have a key or not, never log the key itself or its contents
+        if vendor == "openai":
+            print(f"INFO: [main.create_collection] Using OpenAI API key: {'[PROVIDED]' if api_key else '[MISSING]'}")
             
-            # DEBUG: Check if environment variables are accessible
-            import os
-            print(f"DEBUG: Environment check EMBEDDINGS_VENDOR={os.getenv('EMBEDDINGS_VENDOR')}")
-            print(f"DEBUG: Environment check EMBEDDINGS_MODEL={os.getenv('EMBEDDINGS_MODEL')}")
-            print(f"DEBUG: Environment check EMBEDDINGS_ENDPOINT={os.getenv('EMBEDDINGS_ENDPOINT')}")
-                
-            # These fields are now handled during ingestion, no need to modify them here
-            # The collection creation just stores the config, validation happens during ingestion
-            # We'll pre-validate only if the config doesn't use 'default' values
-            if model_info.get('model') != 'default' and model_info.get('vendor') != 'default':
-                try:
-                    # Create a temporary DB collection record for validation
-                    from database.models import Collection
-                    temp_collection = Collection(id=-1, name="temp_validation", 
-                                                owner="system", description="Validation only", 
-                                                embeddings_model=json.dumps(model_info))
-                    
-                    # This will be executed later when we validate the collection API
-                    # Commented out for now to avoid circular imports
-                    # from database.connection import get_embedding_function_by_params
-                    # get_embedding_function_by_params(
-                    #     vendor=model_info.get('vendor'),
-                    #     model_name=model_info.get('model'),
-                    #     api_key=model_info.get('apikey'),
-                    #     api_endpoint=model_info.get('api_endpoint')
-                    # )
-                except Exception as emb_error:
-                    print(f"ERROR: Embeddings model validation failed: {str(emb_error)}")
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Embeddings model validation failed: {str(emb_error)}. Please check your configuration."
-                    )
-                
-            embeddings_model = model_info
+        resolved_config["apikey"] = api_key
         
-        db_collection = CollectionService.create_collection(
-            db=db,
-            name=collection.name,
-            owner=collection.owner,
-            description=collection.description,
-            visibility=visibility,
-            embeddings_model=embeddings_model
-        )
+        # Resolve API endpoint (needed for some vendors like Ollama)
+        api_endpoint = model_info.get("api_endpoint")
+        if api_endpoint == "default":
+            api_endpoint = os.getenv("EMBEDDINGS_ENDPOINT")
+            if not api_endpoint and vendor == "ollama":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="EMBEDDINGS_ENDPOINT environment variable not set but 'default' specified for Ollama"
+                )
+        if api_endpoint:  # Only add if not None
+            resolved_config["api_endpoint"] = api_endpoint
+            
+        # Log the resolved configuration
+        print(f"INFO: [main.create_collection] Resolved embeddings config: {resolved_config}")
         
-        # Ensure embeddings_model is a dictionary before returning
-        if isinstance(db_collection.embeddings_model, str):
-            try:
-                db_collection.embeddings_model = json.loads(db_collection.embeddings_model)
-            except (json.JSONDecodeError, TypeError):
-                # If we can't parse it, return an empty dict rather than failing
-                db_collection.embeddings_model = {}
-        
-        return db_collection
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to create collection: {str(e)}"
-        )
+        # Replace default values with resolved values in the collection object
+        collection.embeddings_model = EmbeddingsModel(**resolved_config)
+    
+    # Now call the service with default values already resolved
+    return CollectionsService.create_collection(collection, db)
 
 
 # List collections
@@ -1069,38 +1052,13 @@ async def list_collections(
     Returns:
         List of collections matching the filter criteria
     """
-    # Convert visibility string to enum if provided
-    visibility_enum = None
-    if visibility:
-        try:
-            visibility_enum = Visibility(visibility)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid visibility value: {visibility}. Must be 'private' or 'public'."
-            )
-    
-    # Get collections with filtering
-    collections = CollectionService.list_collections(
+    return CollectionsService.list_collections(
         db=db,
-        owner=owner,
-        visibility=visibility_enum,
         skip=skip,
-        limit=limit
+        limit=limit,
+        owner=owner,
+        visibility=visibility
     )
-    
-    # Count total collections with same filter
-    query = db.query(Collection)
-    if owner:
-        query = query.filter(Collection.owner == owner)
-    if visibility_enum:
-        query = query.filter(Collection.visibility == visibility_enum)
-    total = query.count()
-    
-    return {
-        "total": total,
-        "items": collections
-    }
 
 
 # Get a specific collection
@@ -1141,13 +1099,7 @@ async def get_collection(
     Raises:
         HTTPException: If collection not found
     """
-    collection = CollectionService.get_collection(db, collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Collection with ID {collection_id} not found"
-        )
-    return collection
+    return CollectionsService.get_collection(collection_id, db)
 
 
 # File Registry Endpoints
@@ -1184,33 +1136,7 @@ async def list_files(
     Raises:
         HTTPException: If collection not found
     """
-    # Check if collection exists
-    collection = CollectionService.get_collection(db, collection_id)
-    if not collection:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection with ID {collection_id} not found"
-        )
-    
-    # Query files
-    query = db.query(FileRegistry).filter(FileRegistry.collection_id == collection_id)
-    
-    # Apply status filter if provided
-    if status:
-        try:
-            file_status = FileStatus(status)
-            query = query.filter(FileRegistry.status == file_status)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid status: {status}. Must be one of: completed, processing, failed, deleted"
-            )
-    
-    # Get results
-    files = query.all()
-    
-    # Convert to response model
-    return [file.to_dict() for file in files]
+    return CollectionsService.list_files(collection_id, db, status)
 
 
 @app.put(
@@ -1246,21 +1172,5 @@ async def update_file_status(
     Raises:
         HTTPException: If file not found or status invalid
     """
-    # Validate status
-    try:
-        file_status = FileStatus(status)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid status: {status}. Must be one of: completed, processing, failed, deleted"
-        )
-    
-    # Update file status
-    file = IngestionService.update_file_status(db, file_id, file_status)
-    if not file:
-        raise HTTPException(
-            status_code=404,
-            detail=f"File with ID {file_id} not found"
-        )
-    
-    return file.to_dict()
+    return CollectionsService.update_file_status(file_id, status, db)
+

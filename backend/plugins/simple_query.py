@@ -53,6 +53,8 @@ class SimpleQueryPlugin(QueryPlugin):
                 - top_k: Number of results to return (default: 5)
                 - threshold: Minimum similarity threshold (default: 0.0)
                 - db: SQLAlchemy database session (required)
+                - embedding_function: The embedding function to use (optional)
+                - chroma_collection: The ChromaDB collection to use (optional)
                 
         Returns:
             A list of dictionaries, each containing:
@@ -67,6 +69,8 @@ class SimpleQueryPlugin(QueryPlugin):
         top_k = kwargs.get("top_k", 5)
         threshold = kwargs.get("threshold", 0.0)
         db = kwargs.get("db")
+        embedding_function = kwargs.get("embedding_function")
+        chroma_collection = kwargs.get("chroma_collection")
         
         if not db:
             raise ValueError("Database session is required")
@@ -74,29 +78,60 @@ class SimpleQueryPlugin(QueryPlugin):
         # Validate query text
         if not query_text or query_text.strip() == "":
             raise ValueError("Query text cannot be empty")
-            
-        # Get the collection
-        collection = CollectionService.get_collection(db, collection_id)
-        if not collection:
-            raise ValueError(f"Collection with ID {collection_id} not found")
         
-        # Get collection name - handle both dict-like and attribute access
-        collection_name = collection['name'] if isinstance(collection, dict) else collection.name
-        
-        # Get ChromaDB client and collection
-        chroma_client = get_chroma_client()
-        try:
-            # Get the embedding function for this collection
-            collection_id_for_embedding = collection['id'] if isinstance(collection, dict) else collection.id
-            embedding_function = get_embedding_function(collection_id_for_embedding)
+        # If ChromaDB collection wasn't provided, get it from the DB
+        if not chroma_collection:
+            # Get the collection
+            collection = CollectionService.get_collection(db, collection_id)
+            if not collection:
+                raise ValueError(f"Collection with ID {collection_id} not found")
             
-            # Get the collection with the embedding function
-            chroma_collection = chroma_client.get_collection(
-                name=collection_name,
-                embedding_function=embedding_function
-            )
-        except Exception as e:
-            raise ValueError(f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection. Error: {str(e)}")
+            # Get collection name - handle both dict-like and attribute access
+            collection_name = collection['name'] if isinstance(collection, dict) else collection.name
+            
+            # Get ChromaDB client and collection
+            chroma_client = get_chroma_client()
+            try:
+                # Get the embedding function for this collection if not provided
+                if not embedding_function:
+                    print(f"DEBUG: [simple_query] Getting embedding function from collection")
+                    collection_id_for_embedding = collection['id'] if isinstance(collection, dict) else collection.id
+                    embedding_function = get_embedding_function(collection_id_for_embedding)
+                else:
+                    print(f"DEBUG: [simple_query] Using provided embedding function")
+                
+                # Get the collection with the embedding function
+                try:
+                    chroma_collection = chroma_client.get_collection(
+                        name=collection_name,
+                        embedding_function=embedding_function
+                    )
+                except Exception as e:
+                    # If getting by name fails, try getting by name=uuid (as a fallback)
+                    try:
+                        # Check if collection_name might be a UUID
+                        import uuid
+                        # Try to parse as UUID to validate if it looks like a UUID
+                        try:
+                            uuid_obj = uuid.UUID(collection_name)
+                            is_likely_uuid = True
+                        except ValueError:
+                            is_likely_uuid = False
+                        
+                        if is_likely_uuid:
+                            print(f"DEBUG: [SimpleQueryPlugin] Collection name appears to be a UUID, trying as UUID")
+                            chroma_collection = chroma_client.get_collection(
+                                name=collection_name,
+                                embedding_function=embedding_function
+                            )
+                        else:
+                            raise ValueError(f"Collection '{collection_name}' not found in ChromaDB")
+                    except Exception as e2:
+                        raise ValueError(f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection. Errors: {str(e)}, {str(e2)}")
+            except Exception as e:
+                raise ValueError(f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection. Error: {str(e)}")
+        else:
+            print(f"DEBUG: [simple_query] Using provided ChromaDB collection")
         
         # Record start time
         start_time = time.time()

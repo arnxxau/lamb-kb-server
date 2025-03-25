@@ -95,7 +95,18 @@
                                 
                                 {% if results.timing %}
                                     <span class="text-muted ms-2">
-                                        <small>Query time: {{ results.timing.total_time if results.timing.total_time else '???' }} seconds</small>
+                                        <small>
+                                            Query time: 
+                                            {% if results.timing.total_seconds %}
+                                                {{ "%.2f"|format(results.timing.total_seconds) }} seconds
+                                            {% elif results.timing.total_ms %}
+                                                {{ "%.2f"|format(results.timing.total_ms / 1000) }} seconds
+                                            {% elif results.timing.total_time %}
+                                                {{ results.timing.total_time }} seconds
+                                            {% else %}
+                                                {{ "%.2f"|format(results.timing) if results.timing|float else results.timing }}
+                                            {% endif %}
+                                        </small>
                                     </span>
                                 {% endif %}
                             </div>
@@ -135,7 +146,7 @@
                                                 </div>
                                             </div>
                                             
-                                            {% if result.metadata %}
+                                            {% if result.metadata and result.metadata is not none and result.metadata.items is defined and result.metadata.items is callable %}
                                                 <div class="metadata">
                                                     <h6>Metadata:</h6>
                                                     <table class="table table-sm metadata-table">
@@ -184,5 +195,90 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        // Debug logging for results page
+        console.log("Query results page loaded");
+        
+        // Log query details from template
+        console.log("Query details from server:");
+        console.log("- Collection name:", "{{ collection.name }}");
+        console.log("- Query text:", "{{ query_text }}");
+        console.log("- Results count:", {{ results.count if results.count else 0 }});
+        console.log("- Parameters: top_k={{ top_k }}, threshold={{ threshold }}");
+        console.log("- Include all metadata:", {{ "true" if include_all_metadata else "false" }});
+        
+        // Check if we came from form submission
+        const storedQueryText = sessionStorage.getItem('queryText');
+        const storedTimestamp = sessionStorage.getItem('queryTimestamp');
+        
+        if (storedQueryText) {
+            console.log("Found previous query in session storage:", storedQueryText);
+            
+            if (storedQueryText === "{{ query_text }}") {
+                console.log("✓ Query text matches between form and results page");
+            } else {
+                console.warn("✗ Query text mismatch! Form:", storedQueryText, "Results:", "{{ query_text }}");
+            }
+            
+            if (storedTimestamp) {
+                const elapsed = new Date() - new Date(storedTimestamp);
+                console.log(`Elapsed time since form submission: ${elapsed}ms`);
+            }
+            
+            // Clear session storage
+            sessionStorage.removeItem('queryText');
+            sessionStorage.removeItem('queryTimestamp');
+        } else {
+            console.log("No previous query found in session storage");
+        }
+        
+        // Analyze results structure
+        console.log("Results object analysis:");
+        const resultsCount = {{ results.count if results.count else 0 }};
+        
+        // Check if results object exists and has expected properties
+        if (resultsCount > 0) {
+            console.log("✓ Results count is positive");
+            
+            {% if results.results %}
+                console.log("✓ Results array is present with {{ results.results|length }} items");
+                
+                // Log information about each result
+                {% for result in results.results %}
+                console.log("Result #{{ loop.index }}:");
+                console.log("  - Similarity score: {{ result.similarity }}");
+                console.log("  - Has metadata:", {{ "true" if result.metadata else "false" }});
+                console.log("  - Data length:", {{ result.data|length if result.data else 0 }});
+                {% endfor %}
+            {% else %}
+                console.warn("✗ Results array is missing or empty despite positive count");
+            {% endif %}
+        } else {
+            console.log("No results found (count is 0 or null)");
+            {% if results.results %}
+                console.warn("✗ Results array is present despite count being 0");
+                console.log("Results array length: {{ results.results|length }}");
+            {% else %}
+                console.log("✓ Results array is correctly empty");
+            {% endif %}
+        }
+        
+        // Log timing information if available
+        {% if results.timing %}
+            console.log("Timing information:");
+            {% if results.timing.total_seconds %}
+                console.log("- Total seconds: {{ results.timing.total_seconds }}");
+            {% elif results.timing.total_ms %}
+                console.log("- Total ms: {{ results.timing.total_ms }}");
+            {% elif results.timing.total_time %}
+                console.log("- Total time: {{ results.timing.total_time }}");
+            {% else %}
+                console.log("- Raw timing value:", "{{ results.timing }}");
+            {% endif %}
+        {% else %}
+            console.log("No timing information available");
+        {% endif %}
+    </script>
 </body>
 </html> 

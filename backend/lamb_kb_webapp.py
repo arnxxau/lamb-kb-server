@@ -179,6 +179,47 @@ class LambKBClient:
             json=data
         )
         
+        # Pre-process response before converting to object
+        if isinstance(response, dict):
+            # Ensure results is a list
+            if "results" not in response or response["results"] is None:
+                response["results"] = []
+            
+            # Ensure count is set
+            if "count" not in response or response["count"] is None:
+                response["count"] = len(response.get("results", []))
+            
+            # Ensure each result has valid metadata
+            if "results" in response and isinstance(response["results"], list):
+                for i, result in enumerate(response["results"]):
+                    if "metadata" not in result or result["metadata"] is None:
+                        response["results"][i]["metadata"] = {}
+            
+            # Ensure timing is a dict
+            if "timing" in response and not isinstance(response["timing"], dict):
+                try:
+                    # Handle various timing formats
+                    if isinstance(response["timing"], (int, float)):
+                        response["timing"] = {"total_seconds": response["timing"]}
+                    else:
+                        response["timing"] = {"total_time": str(response["timing"])}
+                except:
+                    response["timing"] = {"total_time": "unknown"}
+            elif "timing" not in response:
+                response["timing"] = {"total_time": "unknown"}
+                
+            # Log the pre-processed response for debugging
+            logger.info(f"Pre-processed query response: count={response['count']}, results_length={len(response['results'])}")
+        else:
+            # If response is not a dict, create a valid structure
+            logger.warning(f"Query response is not a dictionary: {type(response)}")
+            response = {
+                "results": [],
+                "count": 0,
+                "timing": {"total_time": "unknown"},
+                "error": str(response) if response else "Empty response"
+            }
+        
         return self._dict_to_obj(response)
     
     def create_collection(self, collection_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -194,7 +235,28 @@ class LambKBClient:
             Exception: If the API request fails with details about the error
         """
         try:
-            return self._request("post", "/collections", json=collection_data)
+            # Log that we're creating a collection without exposing API key
+            if 'embeddings_model' in collection_data and 'vendor' in collection_data['embeddings_model']:
+                vendor = collection_data['embeddings_model'].get('vendor')
+                model = collection_data['embeddings_model'].get('model')
+                # Log without API key details
+                safe_data = json.loads(json.dumps(collection_data))  # Deep copy
+                if 'apikey' in safe_data.get('embeddings_model', {}):
+                    safe_data['embeddings_model']['apikey'] = '[REDACTED]'
+                logger.info(f"Creating collection with {vendor} embeddings using model {model}")
+            
+            # Send the ORIGINAL data without modification
+            response = self._request("post", "/collections", json=collection_data)
+            
+            # Check for error in response
+            if isinstance(response, dict) and "error" in response:
+                raise Exception(f"API Error: {response['error']}")
+                
+            # Log success with details about the ChromaDB UUID if available
+            if isinstance(response, dict) and "chromadb_uuid" in response:
+                logger.info(f"Collection created successfully with ChromaDB UUID: {response['chromadb_uuid']}")
+            
+            return response
         except requests.exceptions.HTTPError as e:
             # Extract more detailed error message if available
             if hasattr(e, "response") and e.response is not None:
@@ -378,21 +440,22 @@ class ChromaDBHelper:
             
             try:
                 collections = self.client.list_collections()
-                # If collections is a list of strings, it's already what we want
+                # In ChromaDB v0.6.0+, list_collections returns a list of collection names (strings)
+                # In older versions, it returned objects with a name attribute
                 if collections and isinstance(collections[0], str):
+                    # ChromaDB v0.6.0+ - collections is a list of strings
                     logger.info(f"Found {len(collections)} collections in ChromaDB at {self.db_path}")
                     return collections
-                
-                # If collections is a list of objects, extract the names
-                if hasattr(collections[0], 'name'):
-                    collection_names = [col.name for col in collections]
-                    logger.info(f"Found {len(collection_names)} collections in ChromaDB at {self.db_path}")
-                    return collection_names
-                
-                # Fallback: something else is going on
-                logger.warning(f"Unexpected collection format: {collections[0]}")
-                return []
-                
+                else:
+                    # Older ChromaDB - collections is a list of objects with name attribute
+                    try:
+                        collection_names = [col.name for col in collections]
+                        logger.info(f"Found {len(collection_names)} collections in ChromaDB at {self.db_path}")
+                        return collection_names
+                    except (AttributeError, NotImplementedError):
+                        logger.warning(f"Unexpected collection format: {collections[0]}")
+                        return []
+                    
             except Exception as e:
                 logger.error(f"Error listing ChromaDB collections: {e}")
                 return []
@@ -892,10 +955,22 @@ def create_collection():
                 }
             else:
                 # Custom embeddings configuration
+                vendor = request.form.get('vendor', '')
+                model = request.form.get('model', '')
+                api_key = request.form.get('apikey', '')
+                
+                # If using OpenAI but no API key provided, default to environment
+                if vendor.lower() == 'openai' and not api_key:
+                    api_key = "default"
+                    logger.info("Using default OpenAI API key from environment")
+                
+                # Create a copy of the actual API key for logging
+                api_key_for_logging = '****' if api_key else 'None'
+                
                 collection_data["embeddings_model"] = {
-                    "model": request.form.get('model'),
-                    "vendor": request.form.get('vendor'),
-                    "apikey": request.form.get('apikey', '')
+                    "model": model,
+                    "vendor": vendor,
+                    "apikey": api_key
                 }
                 
                 # Add API endpoint if provided
@@ -903,18 +978,79 @@ def create_collection():
                 if api_endpoint:
                     collection_data["embeddings_model"]["api_endpoint"] = api_endpoint
             
-            # Log the request data for debugging
-            logger.info(f"Creating collection with data: {json.dumps(collection_data)}")
+            # Log the request data for debugging without exposing API key
+            safe_data = json.loads(json.dumps(collection_data))  # Deep copy without shared references
+            if 'embeddings_model' in safe_data:
+                # Replace API key for logging only
+                if 'apikey' in safe_data['embeddings_model']:
+                    safe_data['embeddings_model']['apikey'] = '[REDACTED]'
+            logger.info(f"Creating collection '{safe_data['name']}' with {safe_data['embeddings_model']['vendor']} embeddings model {safe_data['embeddings_model']['model']}")
             
-            # Create the collection
+            # Create the collection with the ORIGINAL data
             new_collection = client.create_collection(collection_data)
             
-            flash(f"Collection '{collection_data['name']}' created successfully!", "success")
-            return redirect(url_for('view_collection', collection_id=new_collection['id']))
+            # Log the full response for debugging
+            logger.info(f"API Response: {json.dumps(new_collection) if isinstance(new_collection, dict) else str(new_collection)}")
+            
+            if isinstance(new_collection, dict) and 'error' in new_collection:
+                logger.error(f"API returned error: {new_collection['error']}")
+                flash(f"Error creating collection: {new_collection['error']}", "error")
+                return render_template('create_collection.html')
+                
+            # If we have a dictionary response, extract fields safely
+            collection_id = None
+            collection_name = collection_data.get('name')  # Default to submitted name
+            
+            if isinstance(new_collection, dict):
+                collection_id = new_collection.get('id')
+                if 'name' in new_collection:
+                    collection_name = new_collection.get('name')
+                
+                # Log all fields in the response
+                logger.info(f"Response fields: {', '.join(new_collection.keys())}")
+                
+                # Log the ChromaDB UUID if present
+                if 'chromadb_uuid' in new_collection:
+                    logger.info(f"Collection created with ChromaDB UUID: {new_collection['chromadb_uuid']}")
+            else:
+                # If it's not a dictionary (possibly an object from _dict_to_obj)
+                try:
+                    collection_id = getattr(new_collection, 'id', None)
+                    if hasattr(new_collection, 'name'):
+                        collection_name = new_collection.name
+                    logger.info(f"Response object attributes: {dir(new_collection)}")
+                except Exception as attr_error:
+                    logger.error(f"Error processing response object: {attr_error}")
+            
+            # Successful creation - flash a message and redirect
+            flash(f"Collection '{collection_name}' created successfully!", "success")
+            
+            try:
+                # Try to redirect to the collection details page
+                if collection_id:
+                    logger.info(f"Redirecting to collection ID: {collection_id}")
+                    return redirect(url_for('view_collection', collection_id=collection_id))
+                else:
+                    # If no ID, try to find by name
+                    logger.warning(f"No ID in response, attempting to find collection by name: {collection_name}")
+                    found = client.get_collection_by_name(collection_name)
+                    if found and (isinstance(found, dict) and 'id' in found or hasattr(found, 'id')):
+                        found_id = found.id if hasattr(found, 'id') else found.get('id')
+                        logger.info(f"Found collection by name, ID: {found_id}")
+                        return redirect(url_for('view_collection', collection_id=found_id))
+            except Exception as redirect_error:
+                logger.error(f"Error during redirect: {redirect_error}")
+                
+            # Fall back to collections list
+            logger.info("Falling back to collections list")
+            return redirect(url_for('list_collections'))
+            
         except Exception as e:
-            logger.error(f"Failed to create collection: {str(e)}")
-            # Log embeddings model configuration for debugging
-            logger.error(f"Attempted embeddings config: {json.dumps(collection_data.get('embeddings_model', {}))}")
+            logger.error(f"Exception in create_collection: {str(e)}")
+            # Log exception traceback
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
             flash(f"Error creating collection: {str(e)}", "error")
             return render_template('create_collection.html')
     
@@ -1037,6 +1173,7 @@ def query_collection(collection_id):
                 plugin_params["include_metadata"] = True
             
             try:
+                # Query the collection
                 results = client.query_collection(
                     collection_id, 
                     query_text, 
@@ -1046,6 +1183,47 @@ def query_collection(collection_id):
                     plugin_params=plugin_params
                 )
                 
+                # Log the results for debugging
+                logger.info(f"Query results count: {results.count if hasattr(results, 'count') else 0}")
+                
+                # Ensure results has the _data attribute
+                if not hasattr(results, '_data'):
+                    # If the results object doesn't have _data, it might not be properly converted
+                    # Convert the raw dictionary to our custom object format
+                    if isinstance(results, dict):
+                        results = client._dict_to_obj(results)
+                    else:
+                        # Create a basic structure if we have something unexpected
+                        results = client._dict_to_obj({
+                            "results": [],
+                            "count": 0,
+                            "timing": {"total_time": "Unknown"}
+                        })
+                
+                # Make sure timing is properly formatted
+                if hasattr(results, 'timing'):
+                    # Convert timing to a simple dict if it's not already
+                    if not isinstance(results.timing, dict):
+                        timing_dict = {"total_time": str(results.timing)}
+                        results._data['timing'] = timing_dict
+                else:
+                    results._data['timing'] = {"total_time": "Unknown"}
+                
+                # Handle case where results.results might be None
+                if not hasattr(results, 'results') or results.results is None:
+                    results._data['results'] = []
+                    results._data['count'] = 0
+                
+                # Fix the count field if it doesn't match results
+                if hasattr(results, 'results') and isinstance(results.results, list):
+                    results._data['count'] = len(results.results)
+                    
+                    # Ensure all results have valid metadata attributes
+                    for i, result in enumerate(results.results):
+                        if not hasattr(result, 'metadata') or result.metadata is None:
+                            results._data['results'][i]['metadata'] = {}
+                
+                # Render the query results
                 return render_template(
                     'query_results.html', 
                     collection=collection, 
@@ -1066,6 +1244,13 @@ def query_collection(collection_id):
                 
                 flash(error_message, "error")
                 print(f"Query error: {error_message}")
+                return render_template('query.html', collection=collection)
+            except Exception as e:
+                logger.error(f"Error in query processing: {str(e)}")
+                logger.error(f"Error type: {type(e).__name__}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                flash(f"Error processing query results: {str(e)}", "error")
                 return render_template('query.html', collection=collection)
         
         return render_template('query.html', collection=collection)
@@ -1336,7 +1521,9 @@ def advanced_diagnostics():
                 'chroma_name': api_name if found_in_api else None,
                 'uuid': found_uuid,
                 'found_in_api': found_in_api,
-                'found_uuid': found_uuid is not None and found_uuid != ''
+                'found_uuid': found_uuid is not None and found_uuid != '',
+                'stored_uuid': col.get('chromadb_uuid'),  # Add stored UUID from SQLite
+                'uuid_match': found_uuid == col.get('chromadb_uuid') if found_uuid and col.get('chromadb_uuid') else False
             }
             collection_mapping.append(mapping)
             
@@ -1364,6 +1551,14 @@ def advanced_diagnostics():
                     "id": col["id"],
                     "severity": "medium",
                     "message": f"Collection '{col['name']}' exists in SQLite and ChromaDB API but not in internal ChromaDB"
+                })
+            elif found_uuid and col.get('chromadb_uuid') and found_uuid != col.get('chromadb_uuid'):
+                mismatches.append({
+                    "type": "uuid_mismatch",
+                    "name": col["name"],
+                    "id": col["id"],
+                    "severity": "high",
+                    "message": f"Collection '{col['name']}' has UUID mismatch: SQLite={col.get('chromadb_uuid')}, ChromaDB={found_uuid}"
                 })
         
         # Then add ChromaDB collections not in SQLite
@@ -1393,7 +1588,8 @@ def advanced_diagnostics():
                     'uuid': found_uuid,
                     'found_in_api': True,
                     'found_uuid': found_uuid is not None and found_uuid != '',
-                    'only_in_chroma': True
+                    'only_in_chroma': True,
+                    'stored_uuid': None
                 }
                 collection_mapping.append(mapping)
                 
@@ -1413,6 +1609,15 @@ def advanced_diagnostics():
         diagnostics['critical_mismatches'] = sum(1 for m in mismatches if m["severity"] == "high")
         diagnostics['medium_mismatches'] = sum(1 for m in mismatches if m["severity"] == "medium")
         diagnostics['minor_mismatches'] = sum(1 for m in mismatches if m["severity"] == "low")
+        
+        # Add UUID-specific statistics
+        diagnostics['uuid_stats'] = {
+            'total_collections': len(collection_mapping),
+            'collections_with_uuid': sum(1 for m in collection_mapping if m['found_uuid']),
+            'collections_with_stored_uuid': sum(1 for m in collection_mapping if m['stored_uuid']),
+            'uuid_matches': sum(1 for m in collection_mapping if m['uuid_match']),
+            'uuid_mismatches': sum(1 for m in collection_mapping if m['found_uuid'] and m['stored_uuid'] and m['found_uuid'] != m['stored_uuid'])
+        }
         
         return render_template(
             'advanced_diagnostics.html',

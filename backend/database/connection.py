@@ -170,10 +170,16 @@ def get_embedding_function_by_params(vendor: str, model_name: str, api_key: str 
             if api_key and api_key != "default":
                 openai_api_key = api_key
             else:
+                # Check both environment variables
                 openai_api_key = os.getenv("OPENAI_API_KEY", "")
+                if not openai_api_key:
+                    # Fall back to EMBEDDINGS_APIKEY if OPENAI_API_KEY is not set
+                    openai_api_key = os.getenv("EMBEDDINGS_APIKEY", "")
+                    if openai_api_key:
+                        print(f"DEBUG: [get_embedding_function_by_params] Using EMBEDDINGS_APIKEY since OPENAI_API_KEY is not set")
                 
             if not openai_api_key:
-                raise ValueError("OpenAI API key is required but not provided")
+                raise ValueError("OpenAI API key is required but not provided in either OPENAI_API_KEY or EMBEDDINGS_APIKEY")
                 
             # Set up custom API endpoint if provided
             if api_endpoint and api_endpoint != "default":
@@ -183,6 +189,10 @@ def get_embedding_function_by_params(vendor: str, model_name: str, api_key: str 
             class OpenAIEmbeddingFunction:
                 def __init__(self, model_name, api_key):
                     self.model_name = model_name
+                    # No logging of API key details at all
+                    print(f"DEBUG: [OpenAIEmbeddingFunction.__init__] Creating OpenAI client")
+                    
+                    # Create client with the API key - pass it directly without manipulation
                     self.client = openai.OpenAI(api_key=api_key)
                     
                 def __call__(self, input):
@@ -205,6 +215,7 @@ def get_embedding_function_by_params(vendor: str, model_name: str, api_key: str 
                             batch_embeddings = [embedding.embedding for embedding in response.data]
                             all_embeddings.extend(batch_embeddings)
                         except Exception as e:
+                            print(f"ERROR: [OpenAIEmbeddingFunction.__call__] Failed to generate embeddings: {str(e)}")
                             raise RuntimeError(f"OpenAI API error: {str(e)}")
                     
                     # Print dimensionality info for debugging
@@ -251,14 +262,14 @@ def init_sqlite_db() -> None:
     print(f"SQLite database initialized at: {SQLITE_DB_PATH}")
 
 
-def get_embedding_function(collection_id: int) -> Callable:
-    """Get the embedding function for a collection by its ID.
+def get_embedding_function(collection_id_or_obj: Union[int, Collection, Dict[str, Any]]) -> Callable:
+    """Get the embedding function for a collection by its ID or Collection object.
     
     This function fetches the embedding configuration from the database
     and constructs the appropriate embedding function.
     
     Args:
-        collection_id: ID of the collection
+        collection_id_or_obj: Either a collection ID, a Collection object, or a dict from CollectionService.get_collection
         
     Returns:
         An embedding function compatible with ChromaDB
@@ -272,17 +283,58 @@ def get_embedding_function(collection_id: int) -> Callable:
     import json
     import os
     
-    print(f"DEBUG: [get_embedding_function] Getting embedding function for collection_id: {collection_id}")
+    print(f"DEBUG: [get_embedding_function] Getting embedding function for collection: {collection_id_or_obj}")
     
     # Get SQLite database session
     db = next(get_db())
     
     try:
-        # Get the collection from the database
-        collection = db.query(Collection).filter(Collection.id == collection_id).first()
-        if not collection:
-            print(f"DEBUG: [get_embedding_function] ERROR: Collection not found with ID: {collection_id}")
-            raise ValueError(f"Collection not found with ID: {collection_id}")
+        # Determine if we got an ID or a Collection object
+        collection = None
+        collection_id = None
+        
+        if isinstance(collection_id_or_obj, Collection):
+            # We already have the collection object
+            collection = collection_id_or_obj
+            collection_id = collection.id
+            print(f"DEBUG: [get_embedding_function] Using provided Collection object (id={collection.id})")
+        elif isinstance(collection_id_or_obj, int):
+            # Get the collection from the database
+            collection_id = collection_id_or_obj
+            collection = db.query(Collection).filter(Collection.id == collection_id).first()
+            if not collection:
+                print(f"DEBUG: [get_embedding_function] ERROR: Collection not found with ID: {collection_id}")
+                raise ValueError(f"Collection not found with ID: {collection_id}")
+            print(f"DEBUG: [get_embedding_function] Retrieved Collection from database (id={collection.id})")
+        elif isinstance(collection_id_or_obj, dict):
+            # Handle dict-like objects (e.g. from CollectionService.get_collection)
+            collection_id = collection_id_or_obj.get('id')
+            if not collection_id:
+                raise ValueError("Collection dictionary must contain an 'id' field")
+            
+            # Get the embedding model directly from the dict if available
+            if 'embeddings_model' in collection_id_or_obj:
+                embedding_config = collection_id_or_obj['embeddings_model']
+                
+                # Get configuration parameters
+                model = embedding_config.get("model")
+                vendor = embedding_config.get("vendor")
+                api_key = embedding_config.get("apikey")
+                api_endpoint = embedding_config.get("api_endpoint")
+                
+                print(f"DEBUG: [get_embedding_function] Using embedding config from dict - Model: {model}, Vendor: {vendor}")
+                
+                # Use the helper function to get the actual embedding function
+                return get_embedding_function_by_params(vendor, model, api_key, api_endpoint)
+            
+            # Otherwise get the collection from the database
+            collection = db.query(Collection).filter(Collection.id == collection_id).first()
+            if not collection:
+                print(f"DEBUG: [get_embedding_function] ERROR: Collection not found with ID: {collection_id}")
+                raise ValueError(f"Collection not found with ID: {collection_id}")
+            print(f"DEBUG: [get_embedding_function] Retrieved Collection from database (id={collection.id})")
+        else:
+            raise ValueError(f"Expected Collection object, dictionary or ID, got {type(collection_id_or_obj)}")
             
         # Extract embedding configuration
         embedding_config = json.loads(collection.embeddings_model) if isinstance(collection.embeddings_model, str) else collection.embeddings_model
@@ -298,11 +350,39 @@ def get_embedding_function(collection_id: int) -> Callable:
             print(f"WARNING: [get_embedding_function] Found 'default' values in collection {collection_id} configuration.")
             print(f"WARNING: [get_embedding_function] These should have been resolved during collection creation.")
             print(f"WARNING: [get_embedding_function] Current config: model={model}, vendor={vendor}, api_endpoint={(api_endpoint or 'None')}")
+            
+            # Attempt to resolve any remaining 'default' values from environment
+            if model == "default":
+                model = os.getenv("EMBEDDINGS_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+                print(f"WARNING: [get_embedding_function] Resolved default model to: {model}")
+                
+            if vendor == "default":
+                vendor = os.getenv("EMBEDDINGS_VENDOR", "sentence_transformers")
+                print(f"WARNING: [get_embedding_function] Resolved default vendor to: {vendor}")
+                
+            if api_key == "default":
+                api_key = os.getenv("EMBEDDINGS_APIKEY", "")
+                print(f"WARNING: [get_embedding_function] Resolved default API key from environment")
+                
+            if api_endpoint == "default":
+                api_endpoint = os.getenv("EMBEDDINGS_ENDPOINT", None)
+                print(f"WARNING: [get_embedding_function] Resolved default API endpoint to: {api_endpoint}")
         
         print(f"DEBUG: [get_embedding_function] Using configuration - Model: {model}, Vendor: {vendor}")
         
         # Use the helper function to get the actual embedding function
-        return get_embedding_function_by_params(vendor, model, api_key, api_endpoint)
+        embedding_function = get_embedding_function_by_params(vendor, model, api_key, api_endpoint)
+        
+        # Test the embedding function to ensure it works
+        try:
+            test_result = embedding_function(["Test embedding function validation"])
+            print(f"DEBUG: [get_embedding_function] Test successful with {len(test_result[0])} dimensions")
+        except Exception as test_error:
+            print(f"ERROR: [get_embedding_function] Embedding function test failed: {str(test_error)}")
+            # We re-raise the error since a non-working embedding function is useless
+            raise
+        
+        return embedding_function
         
     except Exception as e:
         print(f"DEBUG: [get_embedding_function] ERROR: {str(e)}")

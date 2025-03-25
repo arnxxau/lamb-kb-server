@@ -93,5 +93,36 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        // Add debugging logs
+        console.log("Query form loaded for collection ID: {{ collection.id }}");
+        
+        // Monitor form submission
+        document.addEventListener('DOMContentLoaded', function() {
+            const queryForm = document.querySelector('form');
+            
+            if (queryForm) {
+                console.log("Form detected, adding submission listener");
+                
+                queryForm.addEventListener('submit', function(e) {
+                    // Log the form data
+                    const formData = new FormData(queryForm);
+                    console.log("Form submitted with data:");
+                    for (let [key, value] of formData.entries()) {
+                        console.log(`${key}: ${value}`);
+                    }
+                    
+                    // Store query info in session storage to verify redirection later
+                    sessionStorage.setItem('queryText', formData.get('query_text'));
+                    sessionStorage.setItem('queryTimestamp', new Date().toISOString());
+                    
+                    console.log("Form submission in progress - redirecting to results page...");
+                });
+            } else {
+                console.error("Query form not found on the page");
+            }
+        });
+    </script>
 </body>
 </html> 

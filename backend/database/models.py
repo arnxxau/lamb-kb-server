@@ -9,7 +9,7 @@ import json
 from enum import Enum
 from typing import Optional, Dict, Any
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, JSON, ForeignKey, Enum as SQLAlchemyEnum
+from sqlalchemy import Column, Integer, String, Text, DateTime, JSON, ForeignKey, Enum as SQLAlchemyEnum, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
@@ -37,7 +37,7 @@ class Collection(Base):
     __tablename__ = "collections"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(255), nullable=False, unique=True, index=True)
+    name = Column(String(255), nullable=False, index=True)
     description = Column(Text, nullable=True)
     creation_date = Column(DateTime, default=datetime.datetime.utcnow)
     owner = Column(String(255), nullable=False, index=True)
@@ -48,6 +48,11 @@ class Collection(Base):
                                   "endpoint": None,
                                   "apikey": None
                               }))
+    chromadb_uuid = Column(String(36), nullable=True, unique=True, index=True)
+    
+    __table_args__ = (
+        UniqueConstraint('name', 'owner', name='uix_collection_name_owner'),
+    )
     
     def __repr__(self):
         return f"<Collection id={self.id}, name={self.name}, owner={self.owner}>"
@@ -61,7 +66,8 @@ class Collection(Base):
             "creation_date": self.creation_date.isoformat() if self.creation_date else None,
             "owner": self.owner,
             "visibility": self.visibility.value,
-            "embeddings_model": json.loads(self.embeddings_model) if isinstance(self.embeddings_model, str) else self.embeddings_model
+            "embeddings_model": json.loads(self.embeddings_model) if isinstance(self.embeddings_model, str) else self.embeddings_model,
+            "chromadb_uuid": self.chromadb_uuid
         }
 
 

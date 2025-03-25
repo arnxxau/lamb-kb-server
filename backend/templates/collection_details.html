@@ -87,6 +87,16 @@
                                         <th>Created:</th>
                                         <td>{{ collection.creation_date }}</td>
                                     </tr>
+                                    <tr>
+                                        <th>ChromaDB UUID:</th>
+                                        <td>
+                                            {% if collection.chromadb_uuid %}
+                                                <span class="text-monospace">{{ collection.chromadb_uuid }}</span>
+                                            {% else %}
+                                                <span class="text-muted">Not available</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
                                 </table>
                             </div>
                             <div class="col-md-6">
