@@ -9,7 +9,7 @@ from typing import Dict, List, Any, Optional
 
 from sqlalchemy.orm import Session
 
-from database.connection import get_chroma_client
+from database.connection import get_chroma_client, get_embedding_function
 from database.models import Collection
 from database.service import CollectionService
 from plugins.base import PluginRegistry, QueryPlugin
@@ -80,12 +80,23 @@ class SimpleQueryPlugin(QueryPlugin):
         if not collection:
             raise ValueError(f"Collection with ID {collection_id} not found")
         
+        # Get collection name - handle both dict-like and attribute access
+        collection_name = collection['name'] if isinstance(collection, dict) else collection.name
+        
         # Get ChromaDB client and collection
         chroma_client = get_chroma_client()
         try:
-            chroma_collection = chroma_client.get_collection(name=collection.name)
+            # Get the embedding function for this collection
+            collection_id_for_embedding = collection['id'] if isinstance(collection, dict) else collection.id
+            embedding_function = get_embedding_function(collection_id_for_embedding)
+            
+            # Get the collection with the embedding function
+            chroma_collection = chroma_client.get_collection(
+                name=collection_name,
+                embedding_function=embedding_function
+            )
         except Exception as e:
-            raise ValueError(f"Collection '{collection.name}' exists in database but not in ChromaDB. Please recreate the collection.")
+            raise ValueError(f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection. Error: {str(e)}")
         
         # Record start time
         start_time = time.time()

@@ -294,15 +294,18 @@ async def query_collection(
             status_code=404,
             detail=f"Collection with ID {collection_id} not found in database"
         )
+    
+    # Get collection name - handle both dict-like and attribute access
+    collection_name = collection['name'] if isinstance(collection, dict) else collection.name
         
     # Also verify ChromaDB collection exists
     try:
         chroma_client = get_chroma_client()
-        chroma_collection = chroma_client.get_collection(name=collection.name)
+        chroma_collection = chroma_client.get_collection(name=collection_name)
     except Exception as e:
         raise HTTPException(
             status_code=404,
-            detail=f"Collection '{collection.name}' exists in database but not in ChromaDB. Please recreate the collection."
+            detail=f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection."
         )
     
     # Prepare plugin parameters
@@ -1005,6 +1008,15 @@ async def create_collection(
             visibility=visibility,
             embeddings_model=embeddings_model
         )
+        
+        # Ensure embeddings_model is a dictionary before returning
+        if isinstance(db_collection.embeddings_model, str):
+            try:
+                db_collection.embeddings_model = json.loads(db_collection.embeddings_model)
+            except (json.JSONDecodeError, TypeError):
+                # If we can't parse it, return an empty dict rather than failing
+                db_collection.embeddings_model = {}
+        
         return db_collection
     except Exception as e:
         raise HTTPException(

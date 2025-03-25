@@ -1,7 +1,7 @@
 """
-Database service module for the Lamb Knowledge Base Server.
+Database service module for managing collections.
 
-This module provides service functions for interacting with the SQLite and ChromaDB databases.
+This module provides service functions for managing collections in both SQLite and ChromaDB.
 """
 
 import json
@@ -170,7 +170,7 @@ class CollectionService:
         return db_collection
     
     @staticmethod
-    def get_collection(db: Session, collection_id: int) -> Optional[Collection]:
+    def get_collection(db: Session, collection_id: int) -> Optional[Dict[str, Any]]:
         """Get a collection by ID.
         
         Args:
@@ -178,9 +178,21 @@ class CollectionService:
             collection_id: ID of the collection to retrieve
             
         Returns:
-            The Collection object if found, None otherwise
+            The Collection as a dictionary if found, None otherwise
         """
-        return db.query(Collection).filter(Collection.id == collection_id).first()
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        if not collection:
+            return None
+        
+        # Convert to dictionary and ensure embeddings_model is deserialized
+        collection_dict = collection.to_dict()
+        if isinstance(collection_dict['embeddings_model'], str):
+            try:
+                collection_dict['embeddings_model'] = json.loads(collection_dict['embeddings_model'])
+            except (json.JSONDecodeError, TypeError):
+                collection_dict['embeddings_model'] = {}
+            
+        return collection_dict
     
     @staticmethod
     def get_collection_by_name(db: Session, name: str) -> Optional[Collection]:
@@ -197,33 +209,48 @@ class CollectionService:
     
     @staticmethod
     def list_collections(
-        db: Session, 
+        db: Session,
         owner: Optional[str] = None,
         visibility: Optional[Visibility] = None,
-        skip: int = 0, 
+        skip: int = 0,
         limit: int = 100
-    ) -> List[Collection]:
+    ) -> List[Dict[str, Any]]:
         """List collections with optional filtering.
         
         Args:
-            db: SQLAlchemy database session
+            db: Database session
             owner: Optional filter by owner
             visibility: Optional filter by visibility
-            skip: Number of records to skip
-            limit: Maximum number of records to return
+            skip: Number of collections to skip
+            limit: Maximum number of collections to return
             
         Returns:
-            List of Collection objects
+            List of collections
         """
+        # Build query
         query = db.query(Collection)
         
+        # Apply filters if provided
         if owner:
             query = query.filter(Collection.owner == owner)
-        
         if visibility:
             query = query.filter(Collection.visibility == visibility)
         
-        return query.offset(skip).limit(limit).all()
+        # Apply pagination
+        collections = query.offset(skip).limit(limit).all()
+        
+        # Convert to dictionary and ensure embeddings_model is deserialized
+        result = []
+        for collection in collections:
+            collection_dict = collection.to_dict()
+            if isinstance(collection_dict['embeddings_model'], str):
+                try:
+                    collection_dict['embeddings_model'] = json.loads(collection_dict['embeddings_model'])
+                except (json.JSONDecodeError, TypeError):
+                    collection_dict['embeddings_model'] = {}
+            result.append(collection_dict)
+        
+        return result
     
     @staticmethod
     def update_collection(

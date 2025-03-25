@@ -34,7 +34,7 @@ API_KEY = os.getenv("LAMB_API_KEY", "0p3n-w3bu!")
 BASE_URL = os.getenv("LAMB_KB_SERVER_URL", "http://localhost:9090")
 
 # Try to get ChromaDB path from environment or use a few common paths
-CHROMADB_PATH = os.getenv("CHROMADB_PATH", "/Users/ludo/Code/lamb-project/lamb-kb-server/backend/data/chromadb")
+CHROMADB_PATH = os.getenv("CHROMADB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data/chromadb"))
 CHROMADB_PATHS = [
     CHROMADB_PATH,
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "data/chromadb"),
@@ -56,74 +56,131 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 class LambKBClient:
-    """Client for interacting with the lamb-kb-server API."""
+    """Client for interacting with the Lamb KB Server API."""
     
     def __init__(self, base_url: str, api_key: str):
-        """Initialize the client.
-        
-        Args:
-            base_url: Base URL of the lamb-kb-server API
-            api_key: API key for authentication
-        """
-        self.base_url = base_url
+        """Initialize the client with the base URL and API key."""
+        self.base_url = base_url.rstrip('/')
+        self.api_key = api_key
         self.headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
+            "Authorization": f"Bearer {api_key}"
         }
     
-    def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
-        """Make a request to the API."""
-        url = f"{self.base_url}{endpoint}"
-        headers = kwargs.pop("headers", self.headers)
+    def _dict_to_obj(self, data: Dict) -> Any:
+        """Convert a dictionary to an object with attribute access."""
+        if data and isinstance(data, dict):
+            class DictToObject:
+                def __init__(self, data_dict):
+                    self.__dict__.update(data_dict)
+                    # For debugging and compatibility with str.format and f-strings
+                    self._data = data_dict
+                
+                def __getitem__(self, key):
+                    return self.__dict__.get(key)
+                
+                def __str__(self):
+                    return str(self._data)
+                    
+                def __repr__(self):
+                    return repr(self._data)
+                
+                def get(self, key, default=None):
+                    return self.__dict__.get(key, default)
+                
+                def to_dict(self):
+                    return self._data
+            
+            # Handle nested dictionaries and lists
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    data[key] = self._dict_to_obj(value)
+                elif isinstance(value, list):
+                    data[key] = [self._dict_to_obj(item) if isinstance(item, dict) else item for item in value]
+            
+            return DictToObject(data)
+        return data
+    
+    def _request(self, method: str, path: str, **kwargs) -> Any:
+        """Make a request to the API with error handling."""
+        url = f"{self.base_url}{path}"
+        
+        # Add headers
+        if "headers" not in kwargs:
+            kwargs["headers"] = {}
+        kwargs["headers"].update(self.headers)
         
         try:
-            response = requests.request(method, url, headers=headers, **kwargs)
-            response.raise_for_status()
+            response = requests.request(method, url, **kwargs)
             
-            if response.content:
+            # Check for errors
+            if response.status_code >= 400:
+                error_message = f"API Error ({response.status_code}): {response.text}"
+                return {"error": error_message}
+            
+            # Return the response data
+            try:
                 return response.json()
-            return {}
-        except requests.exceptions.RequestException as e:
-            print(f"API request error: {str(e)}")
-            if hasattr(e, "response") and e.response is not None:
-                print(f"Response: {e.response.text[:500]}")
-            raise
-    
-    def list_collections(self, owner=None) -> Dict[str, Any]:
-        """List collections with optional owner filter."""
-        params = {}
-        if owner:
-            params["owner"] = owner
-        return self._request("get", "/collections", params=params)
+            except ValueError:
+                return response.text
+                
+        except Exception as e:
+            error_message = f"Request Error: {str(e)}"
+            print(f"ERROR: {error_message}")
+            return {"error": error_message}
     
     def get_collection(self, collection_id: int) -> Dict[str, Any]:
         """Get details of a specific collection."""
-        return self._request("get", f"/collections/{collection_id}")
+        collection = self._request("get", f"/collections/{collection_id}")
+        return self._dict_to_obj(collection)
+    
+    def list_collections(self) -> List[Dict[str, Any]]:
+        """List all collections."""
+        collections = self._request("get", f"/collections")
+        if collections and isinstance(collections, dict) and "items" in collections:
+            collections["items"] = [self._dict_to_obj(item) for item in collections["items"]]
+            return self._dict_to_obj(collections)
+        return collections
     
     def list_files(self, collection_id: int, status=None) -> List[Dict[str, Any]]:
-        """List files in a collection with optional status filter."""
+        """List files in a collection."""
         params = {}
         if status:
             params["status"] = status
-        return self._request("get", f"/collections/{collection_id}/files", params=params)
+            
+        files = self._request("get", f"/collections/{collection_id}/files", params=params)
+        return [self._dict_to_obj(file) for file in files] if isinstance(files, list) else files
+    
+    def list_query_plugins(self) -> List[Dict[str, Any]]:
+        """List all query plugins."""
+        plugins = self._request("get", f"/query/plugins")
+        return plugins
+    
+    def list_ingestion_plugins(self) -> List[Dict[str, Any]]:
+        """List all ingestion plugins."""
+        plugins = self._request("get", f"/ingestion/plugins")
+        return plugins
     
     def query_collection(self, collection_id: int, query_text: str, top_k: int = 5, 
-                         threshold: float = 0.0, metadata_filter: Dict = None) -> Dict[str, Any]:
-        """Query a collection for similar documents."""
+                        threshold: float = 0.0, plugin_name: str = "simple_query",
+                        plugin_params: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Query a collection."""
+        plugin_params = plugin_params or {}
+        
         data = {
             "query_text": query_text,
-            "top_k": top_k,
+            "top_k": top_k, 
             "threshold": threshold,
-            "plugin_params": {}
+            "plugin_params": plugin_params
         }
         
-        # Add metadata filter if provided
-        if metadata_filter:
-            data["plugin_params"]["metadata_filter"] = metadata_filter
-            data["plugin_params"]["include_metadata"] = True
-            
-        return self._request("post", f"/collections/{collection_id}/query", json=data)
+        response = self._request(
+            "post", 
+            f"/collections/{collection_id}/query?plugin_name={plugin_name}",
+            json=data
+        )
         
+        return self._dict_to_obj(response)
+    
     def create_collection(self, collection_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new collection.
         
@@ -132,8 +189,23 @@ class LambKBClient:
             
         Returns:
             Newly created collection details
+            
+        Raises:
+            Exception: If the API request fails with details about the error
         """
-        return self._request("post", "/collections", json=collection_data)
+        try:
+            return self._request("post", "/collections", json=collection_data)
+        except requests.exceptions.HTTPError as e:
+            # Extract more detailed error message if available
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_data = e.response.json()
+                    if "detail" in error_data:
+                        raise Exception(f"API Error: {error_data['detail']}")
+                except (ValueError, KeyError):
+                    pass
+            # If we couldn't extract a detailed error, raise the original exception
+            raise
         
     def get_collection_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Get a collection by its name.
@@ -145,10 +217,48 @@ class LambKBClient:
             Collection details or None if not found
         """
         collections = self.list_collections()
+        if not collections or 'items' not in collections:
+            return None
+            
+        name_lower = name.lower().strip()
         for col in collections.get("items", []):
-            if col["name"] == name:
+            if isinstance(col, dict):
+                col_name = col.get("name", "").lower().strip()
+            else:
+                col_name = getattr(col, "name", "").lower().strip()
+                
+            if col_name == name_lower:
                 return col
         return None
+        
+    def ingest_file_to_collection(self, collection_id: int, file, plugin_name: str, plugin_params: Dict[str, Any]) -> Dict[str, Any]:
+        """Ingest a file into a collection using a specified plugin.
+        
+        Args:
+            collection_id: ID of the collection
+            file: File object with filename, stream, and content_type attributes
+            plugin_name: Name of the ingestion plugin to use
+            plugin_params: Parameters for the plugin
+            
+        Returns:
+            Result of the ingestion operation
+        """
+        url = f"{self.base_url}/collections/{collection_id}/ingest-file"
+        headers = {k: v for k, v in self.headers.items() if k != 'Content-Type'}
+        
+        # Prepare the form data
+        form_data = {
+            'plugin_name': plugin_name,
+            'plugin_params': json.dumps(plugin_params)
+        }
+        
+        files = {
+            'file': (file.filename, file.stream, file.content_type)
+        }
+        
+        response = requests.post(url, headers=headers, data=form_data, files=files)
+        response.raise_for_status()
+        return response.json()
 
 # ChromaDB Helper Class
 class ChromaDBHelper:
@@ -727,17 +837,29 @@ chroma_helper = ChromaDBHelper(CHROMADB_PATHS)
 
 @app.route('/')
 def index():
-    """Home page - show a form to search for collections by owner."""
-    return render_template('index.html')
+    """Home page."""
+    try:
+        # Check if the API is available
+        health = client._request("get", "/health")
+        api_status = "Connected" if health.get("status") == "ok" else "Error"
+        api_error = None
+    except Exception as e:
+        api_status = "Error"
+        api_error = str(e)
+    
+    return render_template('index.html', api_status=api_status, api_error=api_error)
 
 @app.route('/collections', methods=['GET'])
 def list_collections():
-    """List all collections."""
-    # Get owner filter if provided in query params
+    """List collections, optionally filtered by owner."""
     owner = request.args.get('owner', '')
     try:
         if owner:
-            collections = client.list_collections(owner=owner)
+            # Use the updated list_collections method without owner parameter
+            collections = client.list_collections()
+            # Filter by owner in memory instead if needed
+            if collections and 'items' in collections:
+                collections['items'] = [col for col in collections['items'] if col.get('owner') == owner]
         else:
             collections = client.list_collections()
         return render_template('collections.html', collections=collections.get('items', []), owner=owner)
@@ -762,28 +884,27 @@ def create_collection():
             embeddings_type = request.form.get('embeddings_type')
             
             if embeddings_type == 'default':
-                # Instead of using 'default' which causes issues when env vars aren't set,
-                # use the actual default values that the server uses:
-                embeddings_model = {
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                    "vendor": "local",
-                    "apikey": ""
+                # Use 'default' for all embeddings model parameters
+                collection_data["embeddings_model"] = {
+                    "model": "default",
+                    "vendor": "default",
+                    "apikey": "default"
                 }
             else:
                 # Custom embeddings configuration
-                embeddings_model = {
+                collection_data["embeddings_model"] = {
                     "model": request.form.get('model'),
                     "vendor": request.form.get('vendor'),
-                    "apikey": request.form.get('apikey')
+                    "apikey": request.form.get('apikey', '')
                 }
                 
                 # Add API endpoint if provided
                 api_endpoint = request.form.get('api_endpoint')
                 if api_endpoint:
-                    embeddings_model["api_endpoint"] = api_endpoint
+                    collection_data["embeddings_model"]["api_endpoint"] = api_endpoint
             
-            # Add embeddings model to collection data
-            collection_data["embeddings_model"] = embeddings_model
+            # Log the request data for debugging
+            logger.info(f"Creating collection with data: {json.dumps(collection_data)}")
             
             # Create the collection
             new_collection = client.create_collection(collection_data)
@@ -791,7 +912,11 @@ def create_collection():
             flash(f"Collection '{collection_data['name']}' created successfully!", "success")
             return redirect(url_for('view_collection', collection_id=new_collection['id']))
         except Exception as e:
+            logger.error(f"Failed to create collection: {str(e)}")
+            # Log embeddings model configuration for debugging
+            logger.error(f"Attempted embeddings config: {json.dumps(collection_data.get('embeddings_model', {}))}")
             flash(f"Error creating collection: {str(e)}", "error")
+            return render_template('create_collection.html')
     
     # For GET requests or if there was an error, show the form
     return render_template('create_collection.html')
@@ -803,8 +928,13 @@ def view_collection(collection_id):
         collection = client.get_collection(collection_id)
         files = client.list_files(collection_id)
         
-        # Calculate some statistics
-        total_documents = sum(file.get('document_count', 0) for file in files)
+        # Calculate some statistics - handle both dict and object access
+        def get_value(obj, key, default=0):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+        
+        total_documents = sum(get_value(file, 'document_count', 0) for file in files)
         file_count = len(files)
         
         return render_template(
@@ -817,6 +947,73 @@ def view_collection(collection_id):
     except Exception as e:
         flash(f"Error fetching collection details: {str(e)}", "error")
         return redirect(url_for('index'))
+
+@app.route('/collections/<int:collection_id>/ingest-file', methods=['POST'])
+def ingest_file(collection_id):
+    """Ingest a file to a collection using the SimpleIngestPlugin."""
+    try:
+        # Get the file from the request
+        if 'file' not in request.files:
+            flash("No file part in the request", "error")
+            return redirect(url_for('view_collection', collection_id=collection_id))
+            
+        file = request.files['file']
+        if file.filename == '':
+            flash("No file selected", "error")
+            return redirect(url_for('view_collection', collection_id=collection_id))
+            
+        # Validate file extension
+        filename = file.filename
+        file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+        if file_ext not in {'txt', 'md', 'markdown', 'text'}:
+            flash(f"Unsupported file type: .{file_ext}. Only .txt, .md, .markdown, and .text files are supported.", "error")
+            return redirect(url_for('view_collection', collection_id=collection_id))
+        
+        # Get plugin parameters from the form
+        plugin_name = request.form.get('plugin_name', 'simple_ingest')
+        
+        # Parse plugin parameters from form or use defaults
+        try:
+            plugin_params = request.form.get('plugin_params', '{}')
+            params = json.loads(plugin_params)
+        except json.JSONDecodeError:
+            # If JSON parsing fails, try to get parameters individually
+            chunk_size = request.form.get('chunk_size', 1000)
+            chunk_unit = request.form.get('chunk_unit', 'char')
+            chunk_overlap = request.form.get('chunk_overlap', 200)
+            params = {
+                'chunk_size': int(chunk_size),
+                'chunk_unit': chunk_unit,
+                'chunk_overlap': int(chunk_overlap)
+            }
+        
+        # Use the client method to make the API call
+        result = client.ingest_file_to_collection(
+            collection_id=collection_id,
+            file=file,
+            plugin_name=plugin_name,
+            plugin_params=params
+        )
+        
+        # Show success message
+        # Handle different response structures safely with fallbacks
+        original_filename = result.get('original_filename', filename)
+        documents_added = result.get('documents_added', 0)
+        flash(f"Successfully ingested file '{original_filename}' and created {documents_added} documents.", "success")
+        
+    except requests.exceptions.HTTPError as e:
+        error_message = "API Error"
+        try:
+            error_detail = e.response.json().get('detail', str(e))
+            error_message = f"API Error: {error_detail}"
+        except:
+            error_message = f"API Error: {str(e)}"
+        flash(error_message, "error")
+    except Exception as e:
+        flash(f"Error ingesting file: {str(e)}", "error")
+        print(f"Detailed error: {type(e).__name__}: {e}")
+    
+    return redirect(url_for('view_collection', collection_id=collection_id))
 
 @app.route('/collections/<int:collection_id>/query', methods=['GET', 'POST'])
 def query_collection(collection_id):
@@ -834,28 +1031,47 @@ def query_collection(collection_id):
                 flash("Please enter a query text", "error")
                 return render_template('query.html', collection=collection)
             
-            metadata_filter = {} if include_all_metadata else None
-            results = client.query_collection(
-                collection_id, 
-                query_text, 
-                top_k, 
-                threshold, 
-                metadata_filter
-            )
+            # Create plugin params for metadata filtering if needed
+            plugin_params = {}
+            if include_all_metadata:
+                plugin_params["include_metadata"] = True
             
-            return render_template(
-                'query_results.html', 
-                collection=collection, 
-                query_text=query_text,
-                top_k=top_k,
-                threshold=threshold,
-                results=results,
-                include_all_metadata=include_all_metadata
-            )
+            try:
+                results = client.query_collection(
+                    collection_id, 
+                    query_text, 
+                    top_k, 
+                    threshold,
+                    plugin_name="simple_query", 
+                    plugin_params=plugin_params
+                )
+                
+                return render_template(
+                    'query_results.html', 
+                    collection=collection, 
+                    query_text=query_text,
+                    top_k=top_k,
+                    threshold=threshold,
+                    results=results,
+                    include_all_metadata=include_all_metadata
+                )
+            except requests.exceptions.HTTPError as e:
+                error_message = "API Error"
+                try:
+                    if hasattr(e, "response") and e.response is not None:
+                        error_detail = e.response.json().get('detail', str(e))
+                        error_message = f"API Error: {error_detail}"
+                except:
+                    error_message = f"API Error: {str(e)}"
+                
+                flash(error_message, "error")
+                print(f"Query error: {error_message}")
+                return render_template('query.html', collection=collection)
         
         return render_template('query.html', collection=collection)
     except Exception as e:
         flash(f"Error: {str(e)}", "error")
+        print(f"Exception in query_collection: {type(e).__name__}: {e}")
         return redirect(url_for('view_collection', collection_id=collection_id))
 
 @app.route('/debug/chromadb')
@@ -929,8 +1145,9 @@ def debug_chromadb():
                 # Find in internal collections
                 found_uuid = None
                 for internal_col in chromadb_internal_collections:
-                    if api_name_lower == internal_col['name'].lower().strip():
-                        found_uuid = internal_col['id']
+                    internal_name = internal_col.get('name', '').lower().strip() 
+                    if api_name_lower == internal_name:
+                        found_uuid = internal_col.get('id', '')
                         break
                 
                 mapping = {
@@ -939,7 +1156,7 @@ def debug_chromadb():
                     'chroma_name': api_col,
                     'uuid': found_uuid,
                     'found_in_api': True,
-                    'found_uuid': found_uuid is not None,
+                    'found_uuid': found_uuid is not None and found_uuid != '',
                     'only_in_chroma': True
                 }
                 collection_mapping.append(mapping)
@@ -988,7 +1205,11 @@ def api_list_collections():
     owner = request.args.get('owner', '')
     try:
         if owner:
-            collections = client.list_collections(owner=owner)
+            # Use the updated list_collections method without owner parameter
+            collections = client.list_collections()
+            # Filter by owner in memory instead if needed
+            if collections and 'items' in collections:
+                collections['items'] = [col for col in collections['items'] if col.get('owner') == owner]
         else:
             collections = client.list_collections()
         return jsonify(collections)
@@ -1019,12 +1240,20 @@ def api_query_collection(collection_id):
         query_text = data.get('query_text', '')
         top_k = int(data.get('top_k', 5))
         threshold = float(data.get('threshold', 0.0))
-        metadata_filter = data.get('metadata_filter')
+        plugin_name = data.get('plugin_name', 'simple_query')
+        plugin_params = data.get('plugin_params', {})
         
         if not query_text:
             return jsonify({"error": "Query text is required"}), 400
         
-        results = client.query_collection(collection_id, query_text, top_k, threshold, metadata_filter)
+        results = client.query_collection(
+            collection_id, 
+            query_text, 
+            top_k, 
+            threshold, 
+            plugin_name=plugin_name,
+            plugin_params=plugin_params
+        )
         return jsonify(results)
     except Exception as e:
         return jsonify({"error": str(e)}), 500

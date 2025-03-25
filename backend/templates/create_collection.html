@@ -77,17 +77,15 @@
                             <h4>Embeddings Model Configuration</h4>
                             
                             <div class="mb-3">
-                                <div class="form-check">
-                                    <input class="form-check-input" type="radio" name="embeddings_type" id="default_embeddings" value="default" checked>
-                                    <label class="form-check-label" for="default_embeddings">
+                                <div class="form-check mb-3">
+                                    <input class="form-check-input" type="radio" name="embeddings_type" id="defaultEmbeddings" value="default" checked>
+                                    <label class="form-check-label" for="defaultEmbeddings">
                                         Use Default Embeddings
                                     </label>
-                                    <div class="form-text">Uses the following default configuration:
-                                        <ul class="mb-0 mt-1">
-                                            <li>Model: sentence-transformers/all-MiniLM-L6-v2</li>
-                                            <li>Vendor: local</li>
-                                        </ul>
-                                    </div>
+                                    <p class="text-muted">
+                                        Uses the server's default configuration from environment variables.
+                                        The specific model, vendor, and API key will be determined by the server settings.
+                                    </p>
                                 </div>
                                 <div class="form-check">
                                     <input class="form-check-input" type="radio" name="embeddings_type" id="custom_embeddings" value="custom">
@@ -153,7 +151,7 @@
     <script>
         // Show/hide custom embeddings section based on radio button selection
         document.addEventListener('DOMContentLoaded', function() {
-            const defaultEmbeddings = document.getElementById('default_embeddings');
+            const defaultEmbeddings = document.getElementById('defaultEmbeddings');
             const customEmbeddings = document.getElementById('custom_embeddings');
             const customEmbeddingsSection = document.getElementById('custom_embeddings_section');
             

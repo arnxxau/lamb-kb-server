@@ -16,6 +16,9 @@ if __name__ == '__main__':
     host = os.getenv("LAMB_WEBAPP_HOST", "0.0.0.0")
     port = int(os.getenv("LAMB_WEBAPP_PORT", "9091"))
     
+    # Disable template caching during development
+    app.config['TEMPLATES_AUTO_RELOAD'] = True
+    
     print(f"Starting Lamb KB Web Explorer on http://{host}:{port}")
     print("Press Ctrl+C to stop the server")
     

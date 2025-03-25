@@ -45,9 +45,14 @@
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h2 class="mb-0">{{ collection.name }}</h2>
-                        <a href="{{ url_for('query_collection', collection_id=collection.id) }}" class="btn btn-primary">
-                            <i class="bi bi-search"></i> Query this Collection
-                        </a>
+                        <div>
+                            <button type="button" class="btn btn-success me-2" data-bs-toggle="modal" data-bs-target="#ingestFileModal">
+                                <i class="bi bi-upload"></i> Ingest File
+                            </button>
+                            <a href="{{ url_for('query_collection', collection_id=collection.id) }}" class="btn btn-primary">
+                                <i class="bi bi-search"></i> Query this Collection
+                            </a>
+                        </div>
                     </div>
                     <div class="card-body">
                         <div class="row mb-4">
@@ -187,11 +192,104 @@
             </div>
         </div>
 
+        <!-- File Ingestion Modal -->
+        <div class="modal fade" id="ingestFileModal" tabindex="-1" aria-labelledby="ingestFileModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="ingestFileModalLabel">Ingest File to Collection</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <form action="{{ url_for('ingest_file', collection_id=collection.id) }}" method="post" enctype="multipart/form-data" id="ingestForm">
+                            <div class="mb-3">
+                                <label for="fileUpload" class="form-label">Choose a text file to ingest</label>
+                                <input type="file" class="form-control" id="fileUpload" name="file" accept=".txt,.md,.markdown,.text" required>
+                                <div class="form-text">Supported file types: .txt, .md, .markdown, .text</div>
+                            </div>
+                            
+                            <input type="hidden" name="plugin_name" value="simple_ingest">
+                            
+                            <h6 class="mt-4">Chunking Parameters</h6>
+                            <div class="mb-3">
+                                <label for="chunk_size" class="form-label">Chunk Size</label>
+                                <input type="number" class="form-control" id="chunk_size" name="chunk_size" min="1" value="1000" required>
+                                <div class="form-text">Size of each chunk</div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="chunk_unit" class="form-label">Chunk Unit</label>
+                                <select class="form-select" id="chunk_unit" name="chunk_unit">
+                                    <option value="char" selected>Character</option>
+                                    <option value="word">Word</option>
+                                    <option value="line">Line</option>
+                                </select>
+                                <div class="form-text">Unit for chunking</div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="chunk_overlap" class="form-label">Chunk Overlap</label>
+                                <input type="number" class="form-control" id="chunk_overlap" name="chunk_overlap" min="0" value="200" required>
+                                <div class="form-text">Number of units to overlap between chunks</div>
+                            </div>
+                            
+                            <div class="mt-4">
+                                <div class="alert alert-info">
+                                    <strong>Note:</strong> This will ingest the file using the SimpleIngestPlugin, which handles plain text files with configurable chunking.
+                                </div>
+                            </div>
+                            
+                            <div id="ingestStatus" class="d-none alert alert-info">
+                                <div class="d-flex align-items-center">
+                                    <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                                    <span>Processing file... Please wait.</span>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" form="ingestForm" class="btn btn-success" id="ingestSubmitBtn">Ingest File</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <footer class="mt-5 text-center text-muted">
             <p>Lamb Knowledge Base Server Explorer | <a href="https://github.com/Lamb-Project/lamb-kb-server" target="_blank">GitHub</a></p>
         </footer>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        // Handle file ingestion form submission
+        document.getElementById('ingestForm').addEventListener('submit', function(event) {
+            const fileInput = document.getElementById('fileUpload');
+            if (!fileInput.files.length) {
+                alert('Please select a file to upload');
+                event.preventDefault();
+                return;
+            }
+            
+            // Show processing status
+            document.getElementById('ingestStatus').classList.remove('d-none');
+            document.getElementById('ingestSubmitBtn').disabled = true;
+            
+            // Prepare plugin parameters as JSON
+            const pluginParams = {
+                chunk_size: parseInt(document.getElementById('chunk_size').value),
+                chunk_unit: document.getElementById('chunk_unit').value,
+                chunk_overlap: parseInt(document.getElementById('chunk_overlap').value)
+            };
+            
+            // Create a hidden input for plugin_params JSON
+            const paramsInput = document.createElement('input');
+            paramsInput.type = 'hidden';
+            paramsInput.name = 'plugin_params';
+            paramsInput.value = JSON.stringify(pluginParams);
+            this.appendChild(paramsInput);
+        });
+    </script>
 </body>
 </html> 

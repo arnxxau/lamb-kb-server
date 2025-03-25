@@ -107,7 +107,7 @@
                                 {% if owner %}
                                     No collections found for owner <strong>{{ owner }}</strong>.
                                 {% else %}
-                                    No collections found.
+                                    No collections found. <a href="{{ url_for('create_collection') }}" class="alert-link">Create your first collection</a>
                                 {% endif %}
                             </div>
                         {% endif %}

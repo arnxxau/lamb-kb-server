@@ -8,7 +8,7 @@ It handles initialization, connection management, and basic sanity checks.
 import os
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional, Union, Callable
+from typing import Dict, Any, Optional, Union, Callable, List
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
@@ -16,6 +16,7 @@ from chromadb.utils import embedding_functions
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
+import requests
 
 from .models import Base, Collection, Visibility
 
@@ -43,166 +44,178 @@ chroma_client = chromadb.PersistentClient(
 )
 
 
-def get_embedding_function_by_params(vendor: str, model_name: str, api_key: Optional[str] = None, api_endpoint: Optional[str] = None) -> Union[Callable, None]:
-    """Get the appropriate embedding function based on explicit parameters.
-    This is an internal helper function used by get_embedding_function.
+def get_embedding_function_by_params(vendor: str, model_name: str, api_key: str = "", api_endpoint: str = ""):
+    """Get an embedding function based on vendor and model parameters.
+    
+    This function returns a ChromaDB-compatible embedding function based on
+    the specified vendor and model name.
     
     Args:
-        vendor: The embedding vendor ('local', 'openai', 'ollama', etc.)
-        model_name: The name of the embedding model
-        api_key: API key for the vendor (if required)
-        api_endpoint: Endpoint URL for the API (if applicable)
+        vendor: Embedding vendor (openai, sentence-transformers, ollama)
+        model_name: Name of the embedding model
+        api_key: API key for the vendor (if needed)
+        api_endpoint: Custom API endpoint for the vendor (if needed)
         
     Returns:
         An embedding function compatible with ChromaDB
         
     Raises:
-        ValueError: If an invalid vendor is specified or required parameters are missing
+        ValueError: If the vendor is not supported
+        RuntimeError: If embeddings service is not available
     """
+    import os
+    
     print(f"DEBUG: [get_embedding_function_by_params] Getting embedding function for vendor: {vendor}, model: {model_name}")
     
-    # Validate that vendor is provided
-    if vendor is None or vendor == "":
-        # Set Ollama as the default vendor
-        vendor = "ollama"
-        print(f"DEBUG: [get_embedding_function_by_params] No vendor specified, defaulting to Ollama")
-        
-    if vendor.lower() == 'local':
-        # Local embedding is not recommended due to dependency issues
-        print(f"DEBUG: [get_embedding_function_by_params] WARNING: Local embeddings not recommended, switching to Ollama")
-        print(f"DEBUG: [get_embedding_function_by_params] To use local embeddings, explicitly install sentence-transformers package")
-        
-        # Try to fall back to Ollama 
-        import os
-        vendor = "ollama"
-        model_name = os.getenv("EMBEDDINGS_MODEL", "nomic-embed-text")
-        api_endpoint = os.getenv("EMBEDDINGS_ENDPOINT", "http://localhost:11434/api/embeddings")
-        print(f"DEBUG: [get_embedding_function_by_params] Falling back to Ollama with model: {model_name}")
-        
-        # Continue to next vendor check (will hit the Ollama case)
+    # Check for empty or None values and use defaults if needed
+    if not vendor or vendor == "default":
+        vendor = os.getenv("EMBEDDINGS_VENDOR", "sentence_transformers")
+        print(f"DEBUG: [get_embedding_function_by_params] Using default vendor from environment: {vendor}")
     
-    elif vendor.lower() == 'ollama' or vendor.lower() == 'ollama-local':
-        print(f"DEBUG: [get_embedding_function_by_params] Using Ollama embeddings with model: {model_name}")
+    if not model_name or model_name == "default":
+        model_name = os.getenv("EMBEDDINGS_MODEL", "all-MiniLM-L6-v2")
+        print(f"DEBUG: [get_embedding_function_by_params] Using default model from environment: {model_name}")
+        
+    # Convert vendor to lowercase for case-insensitive matching
+    vendor = vendor.lower()
+    
+    # Ollama embedding function
+    if vendor in ("ollama", "local"):
         import requests
-        import os
         
-        # Get the endpoint URL from parameters or environment
-        # When loading from collection config, api_key might actually be a JSON dict with additional params
-        endpoint = None
-        if isinstance(api_key, dict) and 'endpoint' in api_key:
-            endpoint = api_key['endpoint']
-            print(f"DEBUG: [get_embedding_function_by_params] Using endpoint from collection config: {endpoint}")
-        else:
-            # Use provided api_endpoint parameter if available
-            endpoint = api_endpoint
-            if not endpoint:
-                # Default to environment variable with no hardcoded fallback
-                endpoint = os.getenv("EMBEDDINGS_ENDPOINT")
-                if not endpoint:
-                    print(f"DEBUG: [get_embedding_function_by_params] ERROR: No API endpoint specified for Ollama")
-                    raise ValueError("No API endpoint specified for Ollama embeddings. Please set EMBEDDINGS_ENDPOINT environment variable.")
-                print(f"DEBUG: [get_embedding_function_by_params] Using endpoint from environment: {endpoint}")
+        if not api_endpoint or api_endpoint == "default":
+            api_endpoint = os.getenv("OLLAMA_API_ENDPOINT", "http://localhost:11434")
+            print(f"DEBUG: [get_embedding_function_by_params] Using Ollama embeddings with model: {model_name}")
+            print(f"DEBUG: [get_embedding_function_by_params] Using endpoint from environment: {api_endpoint}")
         
-        # Ensure endpoint ends with /api/embeddings
-        if not endpoint.endswith('/embeddings'):
-            if endpoint.endswith('/api'):
-                endpoint += '/embeddings'
-            elif not endpoint.endswith('/api/'):
-                endpoint += '/api/embeddings'
-        
-        # Test if Ollama service is available before proceeding
-        base_url = endpoint.split('/api/')[0]
+        # Test the Ollama API before proceeding
         try:
-            print(f"DEBUG: [get_embedding_function_by_params] Testing Ollama service at: {base_url}")
-            response = requests.get(f"{base_url}/api/version", timeout=2)
-            response.raise_for_status()
-            print(f"DEBUG: [get_embedding_function_by_params] Ollama service is available: {response.json()}")
+            print(f"DEBUG: [get_embedding_function_by_params] Testing Ollama embeddings API at: {api_endpoint}")
+            response = requests.get(f"{api_endpoint}/api/embeddings")
+            if response.status_code == 200:
+                print(f"DEBUG: [get_embedding_function_by_params] Ollama embeddings API is working properly")
+            else:
+                print(f"WARNING: [get_embedding_function_by_params] Ollama API returned status code: {response.status_code}")
         except Exception as e:
-            print(f"DEBUG: [get_embedding_function_by_params] ERROR: Ollama service is not available: {str(e)}")
-            raise ValueError(f"Ollama service is not available at {base_url}. Error: {str(e)}")
+            print(f"WARNING: [get_embedding_function_by_params] Failed to connect to Ollama service: {str(e)}")
+            print(f"WARNING: [get_embedding_function_by_params] Will try to use anyway assuming it might be available for query/embedding")
         
-        def ollama_embedding_function(texts):
-            print(f"DEBUG: [embedding_function] Generating embeddings for {len(texts)} texts with Ollama")
-            print(f"DEBUG: [embedding_function] Using model: {model_name} at endpoint: {endpoint}")
-            results = []
+        # Use a class to implement the __call__ interface that ChromaDB expects
+        class OllamaEmbeddingFunction:
+            def __init__(self, model_name, api_endpoint):
+                self.model_name = model_name
+                self.api_endpoint = api_endpoint
+                
+            def __call__(self, input):
+                """Generate embeddings using Ollama with the expected ChromaDB interface."""
+                if isinstance(input, str):
+                    input = [input]
+                    
+                embeddings = []
+                for text in input:
+                    try:
+                        response = requests.post(
+                            f"{self.api_endpoint}/api/embeddings",
+                            json={"model": self.model_name, "prompt": text}
+                        )
+                        
+                        if response.status_code == 200:
+                            embedding = response.json().get("embedding", [])
+                            # Print dimensionality info for debugging
+                            print(f"DEBUG: [ollama_embeddings] Generated embedding with {len(embedding)} dimensions")
+                            embeddings.append(embedding)
+                        else:
+                            raise RuntimeError(f"Ollama API error: {response.status_code} - {response.text}")
+                    except Exception as e:
+                        raise RuntimeError(f"Failed to generate Ollama embedding: {str(e)}")
+                
+                return embeddings
+        
+        return OllamaEmbeddingFunction(model_name, api_endpoint)
+    
+    # Sentence Transformers embedding function (local)
+    elif vendor in ("sentence_transformers", "sentence-transformers", "st", "hf", "huggingface"):
+        print(f"DEBUG: [get_embedding_function_by_params] Using local sentence-transformers with model: {model_name}")
+        
+        try:
+            from sentence_transformers import SentenceTransformer
             
-            for text in texts:
-                try:
-                    response = requests.post(
-                        endpoint,
-                        json={
-                            "model": model_name,
-                            "prompt": text
-                        },
-                        timeout=30  # Add timeout to prevent hanging
-                    )
-                    response.raise_for_status()
-                    embedding = response.json().get('embedding')
-                    if embedding:
-                        results.append(embedding)
-                    else:
-                        error_msg = f"No embedding returned from Ollama API: {response.json()}"
-                        print(f"DEBUG: [embedding_function] ERROR: {error_msg}")
-                        raise ValueError(error_msg)
-                except Exception as e:
-                    print(f"DEBUG: [embedding_function] ERROR calling Ollama API: {str(e)}")
-                    raise
+            # Create a class with proper __call__ interface
+            class SentenceTransformerEmbeddingFunction:
+                def __init__(self, model_name):
+                    self.model = SentenceTransformer(model_name)
+                    
+                def __call__(self, input):
+                    """Generate embeddings using sentence-transformers with the expected ChromaDB interface."""
+                    if isinstance(input, str):
+                        input = [input]
+                    
+                    embeddings = self.model.encode(input, convert_to_numpy=True).tolist()
+                    # Print dimensionality info for debugging
+                    print(f"DEBUG: [sentence_transformer_embeddings] Generated {len(embeddings)} embeddings with {len(embeddings[0]) if embeddings else 0} dimensions")
+                    return embeddings
             
-            return results
-        
-        return ollama_embedding_function
-        
-    elif vendor.lower() == 'openai':
+            return SentenceTransformerEmbeddingFunction(model_name)
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize sentence-transformers: {str(e)}")
+    
+    # OpenAI embedding function
+    elif vendor == "openai":
         print(f"DEBUG: [get_embedding_function_by_params] Using OpenAI embeddings with model: {model_name}")
-        if not api_key:
-            print(f"DEBUG: [get_embedding_function_by_params] ERROR: Missing API key for OpenAI")
-            raise ValueError("API key is required for OpenAI embeddings")
         
-        # Mask the API key for logging
-        masked_key = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"  
-        print(f"DEBUG: [get_embedding_function] Using OpenAI API key: {masked_key}")
-        
-        # Add timeout handling for OpenAI API
         try:
-            print(f"DEBUG: [get_embedding_function] Creating OpenAI embedding function")
-            # Create a custom wrapper around the OpenAI embedding function
-            # to add better error handling and timeout management
-            openai_ef = embedding_functions.OpenAIEmbeddingFunction(
-                api_key=api_key,
-                model_name=model_name
-                # Note: ChromaDB's OpenAIEmbeddingFunction doesn't support timeout parameter
-                # If timeout control is needed, we would need to create a custom embedding function
-            )
-            print(f"DEBUG: [get_embedding_function_by_params] Successfully created OpenAI embedding function")
+            import openai
             
-            # Create a wrapper function that adds debugging
-            def debug_embedding_function(texts):
-                print(f"DEBUG: [embedding_function] Generating embeddings for {len(texts)} texts")
-                print(f"DEBUG: [embedding_function] First text sample: {texts[0][:100]}...")
-                try:
-                    import time
-                    start_time = time.time()
-                    print(f"DEBUG: [embedding_function] Calling OpenAI API")
-                    result = openai_ef(texts)
-                    end_time = time.time()
-                    print(f"DEBUG: [embedding_function] OpenAI API call completed in {end_time - start_time:.2f} seconds")
-                    return result
-                except Exception as e:
-                    print(f"DEBUG: [embedding_function] ERROR calling OpenAI API: {str(e)}")
-                    import traceback
-                    print(f"DEBUG: [embedding_function] Stack trace:\n{traceback.format_exc()}")
-                    raise
+            # Set up API key
+            if api_key and api_key != "default":
+                openai_api_key = api_key
+            else:
+                openai_api_key = os.getenv("OPENAI_API_KEY", "")
+                
+            if not openai_api_key:
+                raise ValueError("OpenAI API key is required but not provided")
+                
+            # Set up custom API endpoint if provided
+            if api_endpoint and api_endpoint != "default":
+                openai.api_base = api_endpoint
             
-            return debug_embedding_function
+            # Create a class with proper __call__ interface
+            class OpenAIEmbeddingFunction:
+                def __init__(self, model_name, api_key):
+                    self.model_name = model_name
+                    self.client = openai.OpenAI(api_key=api_key)
+                    
+                def __call__(self, input):
+                    """Generate embeddings using OpenAI with the expected ChromaDB interface."""
+                    if isinstance(input, str):
+                        input = [input]
+                        
+                    all_embeddings = []
+                    
+                    # Process in batches to avoid rate limits
+                    batch_size = 10
+                    for i in range(0, len(input), batch_size):
+                        batch = input[i:i+batch_size]
+                        try:
+                            response = self.client.embeddings.create(
+                                model=self.model_name,
+                                input=batch
+                            )
+                            
+                            batch_embeddings = [embedding.embedding for embedding in response.data]
+                            all_embeddings.extend(batch_embeddings)
+                        except Exception as e:
+                            raise RuntimeError(f"OpenAI API error: {str(e)}")
+                    
+                    # Print dimensionality info for debugging
+                    print(f"DEBUG: [openai_embeddings] Generated {len(all_embeddings)} embeddings with {len(all_embeddings[0]) if all_embeddings else 0} dimensions")
+                    return all_embeddings
             
+            return OpenAIEmbeddingFunction(model_name, openai_api_key)
         except Exception as e:
-            print(f"DEBUG: [get_embedding_function_by_params] ERROR creating OpenAI embedding function: {str(e)}")
-            import traceback
-            print(f"DEBUG: [get_embedding_function_by_params] Stack trace:\n{traceback.format_exc()}")
-            raise
+            raise RuntimeError(f"Failed to initialize OpenAI embeddings: {str(e)}")
     
     else:
-        print(f"DEBUG: [get_embedding_function_by_params] ERROR: Unsupported embedding vendor: {vendor}")
         raise ValueError(f"Unsupported embedding vendor: {vendor}")
 
 

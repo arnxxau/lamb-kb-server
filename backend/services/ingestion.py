@@ -398,7 +398,7 @@ class IngestionService:
                 collection_metadata = {
                     "owner": db_collection.owner,
                     "description": db_collection.description,
-                    "visibility": db_collection.visibility.value if hasattr(db_collection.visibility, 'value') else db_collection.visibility,
+                    "visibility": db_collection.visibility if isinstance(db_collection.visibility, str) else db_collection.visibility.value,
                     "sqlite_id": db_collection.id,
                     "creation_date": datetime.utcnow().isoformat(),
                     "embeddings_model": json.dumps(embedding_config) if isinstance(embedding_config, dict) else embedding_config
