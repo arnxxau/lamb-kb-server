@@ -134,7 +134,8 @@ class IngestionService:
                      plugin_params: Dict[str, Any],
                      owner: str,
                      document_count: int = 0,
-                     content_type: Optional[str] = None) -> FileRegistry:
+                     content_type: Optional[str] = None,
+                     status: FileStatus = FileStatus.COMPLETED) -> FileRegistry:
         """Register a file in the FileRegistry table.
         
         Args:
@@ -148,6 +149,7 @@ class IngestionService:
             owner: Owner of the file
             document_count: Number of chunks/documents created
             content_type: MIME type of the file
+            status: Status of the file (default: COMPLETED)
             
         Returns:
             The created FileRegistry entry
@@ -172,7 +174,7 @@ class IngestionService:
             content_type=content_type,
             plugin_name=plugin_name,
             plugin_params=plugin_params,
-            status=FileStatus.COMPLETED,
+            status=status,
             document_count=document_count,
             owner=owner
         )

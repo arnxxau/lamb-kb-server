@@ -13,7 +13,7 @@ try:
 except ImportError:
     print("WARNING: python-dotenv not installed, environment variables must be set manually")
 
-from fastapi import Depends, FastAPI, HTTPException, status, Query, File, Form, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, status, Query, File, Form, UploadFile, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
@@ -779,7 +779,8 @@ async def ingest_file_to_collection(
     plugin_name: str = Form(...),
     plugin_params: str = Form("{}"),
     token: str = Depends(verify_token),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None
 ):
     """Ingest a file directly into a collection using a specified plugin.
     
@@ -793,6 +794,7 @@ async def ingest_file_to_collection(
         plugin_params: JSON string of parameters for the plugin
         token: Authentication token
         db: Database session
+        background_tasks: FastAPI background tasks
         
     Returns:
         Status information about the ingestion operation
@@ -839,49 +841,117 @@ async def ingest_file_to_collection(
         )
     
     try:
-        # Step 1: Upload file
+        # Step 1: Upload file (this step remains synchronous)
         file_info = IngestionService.save_uploaded_file(
             file=file,
             owner=collection["owner"] if isinstance(collection, dict) else collection.owner,
             collection_name=collection_name
         )
         file_path = file_info["file_path"]
+        file_url = file_info["file_url"]
+        original_filename = file_info["original_filename"]
+        owner = collection["owner"] if isinstance(collection, dict) else collection.owner
         
-        # Step 2: Process file with plugin
-        documents = IngestionService.ingest_file(
-            file_path=file_path,
-            plugin_name=plugin_name,
-            plugin_params=params
-        )
-        
-        # Step 3: Add documents to collection
-        result = IngestionService.add_documents_to_collection(
-            db=db,
-            collection_id=collection_id,
-            documents=documents
-        )
-        
-        # Step 4: Register the file in the FileRegistry
+        # Step 2: Register the file in the FileRegistry with PROCESSING status
         file_registry = IngestionService.register_file(
             db=db,
             collection_id=collection_id,
             file_path=file_path,
-            file_url=file_info["file_url"],
-            original_filename=file_info["original_filename"],
+            file_url=file_url,
+            original_filename=original_filename,
             plugin_name=plugin_name,
             plugin_params=params,
-            owner=collection["owner"] if isinstance(collection, dict) else collection.owner,
-            document_count=len(documents),
-            content_type=file.content_type
+            owner=owner,
+            document_count=0,  # Will be updated after processing
+            content_type=file.content_type,
+            status=FileStatus.PROCESSING  # Set initial status to PROCESSING
         )
         
-        # Add additional information to the result
-        result["file_path"] = file_path
-        result["file_url"] = file_info["file_url"]
-        result["original_filename"] = file_info["original_filename"]
-        result["plugin_name"] = plugin_name
-        result["file_registry_id"] = file_registry.id
-        return result
+        # Step 3: Schedule background task for processing and adding documents
+        def process_file_in_background(file_path: str, plugin_name: str, params: dict, 
+                                     collection_id: int, file_registry_id: int):
+            try:
+                print(f"DEBUG: [background_task] Started processing file: {file_path}")
+                
+                # Create a new session for the background task
+                from database.connection import SessionLocal
+                db_background = SessionLocal()
+                
+                try:
+                    # Step 3.1: Process file with plugin
+                    documents = IngestionService.ingest_file(
+                        file_path=file_path,
+                        plugin_name=plugin_name,
+                        plugin_params=params
+                    )
+                    
+                    # Step 3.2: Add documents to collection
+                    result = IngestionService.add_documents_to_collection(
+                        db=db_background,
+                        collection_id=collection_id,
+                        documents=documents
+                    )
+                    
+                    # Step 3.3: Update file registry with completed status and document count
+                    IngestionService.update_file_status(
+                        db=db_background, 
+                        file_id=file_registry_id, 
+                        status=FileStatus.COMPLETED
+                    )
+                    
+                    # Update document count
+                    file_reg = db_background.query(FileRegistry).filter(FileRegistry.id == file_registry_id).first()
+                    if file_reg:
+                        file_reg.document_count = len(documents)
+                        db_background.commit()
+                    
+                    print(f"DEBUG: [background_task] Completed processing file {file_path} with {len(documents)} documents")
+                finally:
+                    db_background.close()
+                    
+            except Exception as e:
+                print(f"ERROR: [background_task] Failed to process file {file_path}: {str(e)}")
+                import traceback
+                print(f"ERROR: [background_task] Stack trace:\n{traceback.format_exc()}")
+                
+                # Update file status to FAILED
+                try:
+                    from database.connection import SessionLocal
+                    db_error = SessionLocal()
+                    try:
+                        IngestionService.update_file_status(
+                            db=db_error, 
+                            file_id=file_registry_id, 
+                            status=FileStatus.FAILED
+                        )
+                    finally:
+                        db_error.close()
+                except Exception:
+                    print(f"ERROR: [background_task] Could not update file status to FAILED")
+        
+        # Add the task to background tasks
+        background_tasks.add_task(
+            process_file_in_background, 
+            file_path, 
+            plugin_name, 
+            params, 
+            collection_id, 
+            file_registry.id
+        )
+        
+        # Return immediate response with file information
+        return {
+            "collection_id": collection_id,
+            "collection_name": collection_name,
+            "documents_added": 0,  # Initially 0 since processing will happen in background
+            "success": True,
+            "file_path": file_path,
+            "file_url": file_url,
+            "original_filename": original_filename,
+            "plugin_name": plugin_name,
+            "file_registry_id": file_registry.id,
+            "status": "processing"
+        }
     except HTTPException as e:
         raise e
     except Exception as e:
