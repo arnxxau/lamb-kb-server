@@ -73,6 +73,7 @@ class CollectionService:
                 "owner": owner,
                 "description": description or "",
                 "visibility": visibility.value,
+                "hnsw:space": "cosine",
                 # Don't include sqlite_id in initial metadata since we don't have it yet
                 # We'll try to update it after creation
             }
