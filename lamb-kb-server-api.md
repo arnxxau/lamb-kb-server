@@ -410,6 +410,7 @@ Create a new knowledge base collection.
         "embeddings_model": {
           "model": "default",
           "vendor": "default",
+          "endpoint":"default",
           "apikey": "default"
         }
         
@@ -417,6 +418,7 @@ Create a new knowledge base collection.
         # "embeddings_model": {
         #   "model": "text-embedding-3-small",
         #   "vendor": "openai",
+        #   "endpoint":"https://api.openai.com/v1/embeddings"
         #   "apikey": "your-openai-key-here"
         # }
       }'

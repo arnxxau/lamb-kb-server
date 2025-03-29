@@ -30,7 +30,7 @@ class IngestionService:
     STATIC_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / "static"
     
     # URL prefix for accessing static files
-    STATIC_URL_PREFIX = "/static"
+    STATIC_URL_PREFIX = os.getenv("HOME_URL", "http://localhost:9090") + "/static"
     
     @classmethod
     def _ensure_dirs(cls):
