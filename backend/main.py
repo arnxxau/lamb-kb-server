@@ -43,6 +43,8 @@ from schemas.ingestion import (
     IngestionPluginInfo,
     IngestFileRequest,
     IngestFileResponse,
+    IngestURLRequest,
+    IngestURLResponse,
     AddDocumentsRequest,
     AddDocumentsResponse
 )
@@ -668,6 +670,249 @@ async def ingest_file(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to ingest file: {str(e)}"
+        )
+
+
+
+@app.post(
+    "/collections/{collection_id}/ingest-url",
+    response_model=AddDocumentsResponse,
+    summary="Ingest content from URLs directly into a collection",
+    description="""Fetch, process, and add content from URLs to a collection in one operation.
+
+    This endpoint fetches content from specified URLs, processes it with the URL ingestion plugin,
+    and adds the content to the collection.
+
+    Example:
+    ```bash
+    curl -X POST 'http://localhost:9090/collections/1/ingest-url' \
+      -H 'Authorization: Bearer 0p3n-w3bu!' \
+      -H 'Content-Type: application/json' \
+      -d '{
+        "urls": ["https://example.com/page1", "https://example.com/page2"],
+        "plugin_params": {
+          "chunk_size": 1000,
+          "chunk_unit": "char",
+          "chunk_overlap": 200
+        }
+      }'
+    ```
+
+    Parameters for url_ingest plugin:
+    - urls: List of URLs to ingest
+    - chunk_size: Size of each chunk (default: 1000)
+    - chunk_unit: Unit for chunking (char, word, line) (default: char)
+    - chunk_overlap: Number of units to overlap between chunks (default: 200)
+    """,
+    tags=["Ingestion"],
+    responses={
+        200: {"description": "URLs ingested successfully"},
+        400: {"description": "Invalid plugin parameters or URLs"},
+        401: {"description": "Unauthorized - Invalid or missing authentication token"},
+        404: {"description": "Collection or plugin not found"},
+        500: {"description": "Error processing URLs or adding to collection"}
+    }
+)
+async def ingest_url_to_collection(
+    collection_id: int,
+    request: IngestURLRequest,
+    token: str = Depends(verify_token),
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None
+):
+    """Ingest content from URLs directly into a collection.
+
+    This endpoint fetches content from specified URLs, processes it with the URL ingestion plugin,
+    and adds the content to the collection.
+
+    Args:
+        collection_id: ID of the collection
+        request: Request with URLs and processing parameters
+        token: Authentication token
+        db: Database session
+        background_tasks: FastAPI background tasks
+        
+    Returns:
+        Status information about the ingestion operation
+        
+    Raises:
+        HTTPException: If collection not found, plugin not found, or ingestion fails
+    """
+    # Check if collection exists in SQLite
+    collection = CollectionService.get_collection(db, collection_id)
+    if not collection:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Collection with ID {collection_id} not found in database"
+        )
+        
+    # Get collection name - handle both dict-like and attribute access
+    collection_name = collection['name'] if isinstance(collection, dict) else collection.name
+        
+    # Also verify ChromaDB collection exists
+    try:
+        chroma_client = get_chroma_client()
+        chroma_collection = chroma_client.get_collection(name=collection_name)
+    except Exception as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection."
+        )
+    
+    # Check if plugin exists
+    plugin_name = request.plugin_name
+    plugin = IngestionService.get_plugin(plugin_name)
+    if not plugin:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Ingestion plugin '{plugin_name}' not found"
+        )
+    
+    # Check if URLs are provided
+    if not request.urls:
+        raise HTTPException(
+            status_code=400,
+            detail="No URLs provided"
+        )
+    
+    try:
+        # Create a temporary file to track this URL ingestion
+        import tempfile
+        import uuid
+        import os
+        
+        temp_dir = os.path.join(tempfile.gettempdir(), "url_ingestion")
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_file_path = os.path.join(temp_dir, f"{uuid.uuid4().hex}.url")
+        
+        # Write URLs to the temporary file (just for tracking)
+        with open(temp_file_path, "w") as f:
+            for url in request.urls:
+                f.write(f"{url}\n")
+        
+        # Step 1: Register the URL ingestion in the FileRegistry with PROCESSING status
+        # Store the first URL as the filename to make it easier to display and preview
+        first_url = request.urls[0] if request.urls else "unknown_url"
+        file_registry = IngestionService.register_file(
+            db=db,
+            collection_id=collection_id,
+            file_path=temp_file_path,
+            file_url=first_url,  # Store the URL for direct access
+            original_filename=first_url,  # Use the first URL as the original filename for better display
+            plugin_name="url_ingest",  # Ensure consistent plugin name
+            plugin_params={"urls": request.urls, **request.plugin_params},
+            owner=collection["owner"] if isinstance(collection, dict) else collection.owner,
+            document_count=0,  # Will be updated after processing
+            content_type="text/plain",
+            status=FileStatus.PROCESSING  # Set initial status to PROCESSING
+        )
+        
+        # Step 2: Schedule background task for processing and adding documents
+        def process_urls_in_background(urls: List[str], plugin_name: str, params: dict, 
+                                   collection_id: int, file_registry_id: int):
+            try:
+                print(f"DEBUG: [background_task] Started processing URLs: {', '.join(urls[:3])}...")
+                
+                # Create a new session for the background task
+                from database.connection import SessionLocal
+                db_background = SessionLocal()
+                
+                try:
+                    # Make a placeholder file path for the URL ingestion
+                    import tempfile
+                    temp_file = tempfile.NamedTemporaryFile(delete=False)
+                    temp_file_path = temp_file.name
+                    temp_file.close()
+                    
+                    # Step 2.1: Process URLs with plugin
+                    # Add URLs to the plugin parameters
+                    full_params = {**params, "urls": urls}
+                    
+                    documents = IngestionService.ingest_file(
+                        file_path=temp_file_path,  # This is just a placeholder
+                        plugin_name=plugin_name,
+                        plugin_params=full_params
+                    )
+                    
+                    # Step 2.2: Add documents to collection
+                    result = IngestionService.add_documents_to_collection(
+                        db=db_background,
+                        collection_id=collection_id,
+                        documents=documents
+                    )
+                    
+                    # Step 2.3: Update file registry with completed status and document count
+                    IngestionService.update_file_status(
+                        db=db_background, 
+                        file_id=file_registry_id, 
+                        status=FileStatus.COMPLETED
+                    )
+                    
+                    # Update document count
+                    file_reg = db_background.query(FileRegistry).filter(FileRegistry.id == file_registry_id).first()
+                    if file_reg:
+                        file_reg.document_count = len(documents)
+                        db_background.commit()
+                    
+                    # Clean up the temporary file
+                    try:
+                        os.unlink(temp_file_path)
+                    except:
+                        pass
+                    
+                    print(f"DEBUG: [background_task] Completed processing URLs with {len(documents)} documents")
+                finally:
+                    db_background.close()
+                    
+            except Exception as e:
+                print(f"ERROR: [background_task] Failed to process URLs: {str(e)}")
+                import traceback
+                print(f"ERROR: [background_task] Stack trace:\n{traceback.format_exc()}")
+                
+                # Update file status to FAILED
+                try:
+                    from database.connection import SessionLocal
+                    db_error = SessionLocal()
+                    try:
+                        IngestionService.update_file_status(
+                            db=db_error, 
+                            file_id=file_registry_id, 
+                            status=FileStatus.FAILED
+                        )
+                    finally:
+                        db_error.close()
+                except Exception:
+                    print(f"ERROR: [background_task] Could not update file status to FAILED")
+        
+        # Add the task to background tasks
+        background_tasks.add_task(
+            process_urls_in_background, 
+            request.urls, 
+            plugin_name, 
+            request.plugin_params, 
+            collection_id, 
+            file_registry.id
+        )
+        
+        # Return immediate response with URL information
+        return {
+            "collection_id": collection_id,
+            "collection_name": collection_name,
+            "documents_added": 0,  # Initially 0 since processing will happen in background
+            "success": True,
+            "file_path": temp_file_path,
+            "file_url": "",
+            "original_filename": f"urls_{len(request.urls)}",
+            "plugin_name": plugin_name,
+            "file_registry_id": file_registry.id,
+            "status": "processing"
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to ingest URLs: {str(e)}"
         )
 
 
