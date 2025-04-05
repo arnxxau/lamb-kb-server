@@ -140,3 +140,19 @@ class AddDocumentsResponse(BaseModel):
     original_filename: Optional[str] = Field(None, description="Original filename")
     plugin_name: Optional[str] = Field(None, description="Name of the ingestion plugin used")
     file_registry_id: Optional[int] = Field(None, description="ID of the file registry entry")
+
+
+class PreviewURLRequest(BaseModel):
+    """Request to preview content from a URL."""
+    
+    url: str = Field(..., description="URL to preview content from")
+
+
+class PreviewURLResponse(BaseModel):
+    """Response with the content preview from a URL."""
+    
+    url: str = Field(..., description="URL that was previewed")
+    content: str = Field(..., description="Extracted content from the URL")
+    content_type: str = Field("markdown", description="Type of the content (markdown, html, text)")
+    title: Optional[str] = Field(None, description="Title of the page if available")
+    error: Optional[str] = Field(None, description="Error message if the content could not be fetched")

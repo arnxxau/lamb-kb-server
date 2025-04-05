@@ -322,6 +322,70 @@ class LambKBClient:
         response.raise_for_status()
         return response.json()
 
+
+
+
+    def ingest_urls_to_collection(self, collection_id: int, urls: List[str], plugin_params: Dict[str, Any]) -> Dict[str, Any]:
+            """Ingest content from URLs into a collection.
+            
+            Args:
+                collection_id: ID of the collection
+                urls: List of URLs to ingest
+                plugin_params: Parameters for the plugin
+                
+            Returns:
+                Result of the ingestion operation
+            """
+            url = f"{self.base_url}/collections/{collection_id}/ingest-url"
+            
+            # Prepare the request data
+            data = {
+                'urls': urls,
+                'plugin_name': 'url_ingest',
+                'plugin_params': plugin_params
+            }
+            
+            response = requests.post(url, headers=self.headers, json=data)
+            response.raise_for_status()
+            return response.json()
+        
+    def preview_url_content(self, url: str) -> Dict[str, Any]:
+        """Preview content from a URL without ingesting it.
+        
+        Args:
+            url: URL to preview content from
+            
+        Returns:
+            Extracted content from the URL
+        """
+        api_url = f"{self.base_url}/preview-url"
+        
+        # Prepare the request data
+        data = {
+            'url': url
+        }
+        
+        response = requests.post(api_url, headers=self.headers, json=data)
+        response.raise_for_status()
+        return response.json()
+        
+    def get_file_content(self, file_id: int) -> Dict[str, Any]:
+        """Get the content of a file, especially for ingested URLs.
+        
+        Args:
+            file_id: ID of the file
+            
+        Returns:
+            Content of the file
+        """
+        api_url = f"{self.base_url}/files/{file_id}/content"
+        
+        response = requests.get(api_url, headers=self.headers)
+        response.raise_for_status()
+        return response.json()
+
+
+
 # ChromaDB Helper Class
 class ChromaDBHelper:
     """Helper class for directly interacting with ChromaDB."""
@@ -1150,6 +1214,104 @@ def ingest_file(collection_id):
         print(f"Detailed error: {type(e).__name__}: {e}")
     
     return redirect(url_for('view_collection', collection_id=collection_id))
+
+
+
+@app.route('/collections/<int:collection_id>/ingest-url', methods=['POST'])
+def ingest_url(collection_id):
+    """Ingest URLs to a collection using the URLIngestPlugin."""
+    try:
+        # Get request data
+        data = request.json
+        if not data or 'urls' not in data:
+            return jsonify({"error": "Invalid request data. URLs are required."}), 400
+            
+        urls = data.get('urls', [])
+        if not urls:
+            return jsonify({"error": "No URLs provided"}), 400
+
+        # Get plugin parameters from the request or use defaults
+        plugin_params = data.get('plugin_params', {})
+        if not plugin_params:
+            plugin_params = {
+                'chunk_size': 1000,
+                'chunk_unit': 'char',
+                'chunk_overlap': 200
+            }
+            
+        # Forward the API key from the webapp request
+        # Use the client method to make the API call
+        result = client.ingest_urls_to_collection(
+            collection_id=collection_id,
+            urls=urls,
+            plugin_params=plugin_params
+        )
+        
+        # Return success response
+        return jsonify(result)
+        
+    except requests.exceptions.HTTPError as e:
+        error_message = "API Error"
+        try:
+            error_detail = e.response.json().get('detail', str(e))
+            return jsonify({"error": error_detail}), e.response.status_code
+        except:
+            return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        print(f"Detailed error: {type(e).__name__}: {e}")
+        return jsonify({"error": str(e)}), 500
+        
+@app.route('/preview-url', methods=['POST'])
+def preview_url():
+    """Preview content from a URL without ingesting it."""
+    try:
+        # Get request data
+        data = request.json
+        if not data or 'url' not in data:
+            return jsonify({"error": "Invalid request data. URL is required."}), 400
+            
+        url = data.get('url', '')
+        if not url:
+            return jsonify({"error": "No URL provided"}), 400
+            
+        # Use the client method to make the API call
+        result = client.preview_url_content(url=url)
+        
+        # Return the preview result
+        return jsonify(result)
+        
+    except requests.exceptions.HTTPError as e:
+        error_message = "API Error"
+        try:
+            error_detail = e.response.json().get('detail', str(e))
+            return jsonify({"error": error_detail}), e.response.status_code
+        except:
+            return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        print(f"Detailed error: {type(e).__name__}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/files/<int:file_id>/content', methods=['GET'])
+def get_file_content(file_id):
+    """Get the content of a file, especially for ingested URLs."""
+    try:
+        # Use the client method to make the API call
+        result = client.get_file_content(file_id=file_id)
+        
+        # Return the file content
+        return jsonify(result)
+        
+    except requests.exceptions.HTTPError as e:
+        error_message = "API Error"
+        try:
+            error_detail = e.response.json().get('detail', str(e))
+            return jsonify({"error": error_detail}), e.response.status_code
+        except:
+            return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        print(f"Detailed error: {type(e).__name__}: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/collections/<int:collection_id>/query', methods=['GET', 'POST'])
 def query_collection(collection_id):
