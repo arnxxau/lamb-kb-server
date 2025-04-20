@@ -70,12 +70,7 @@ class CollectionService:
         collection_params = {
             "name": name,
             "metadata": {
-                "owner": owner,
-                "description": description or "",
-                "visibility": visibility.value,
                 "hnsw:space": "cosine",
-                # Don't include sqlite_id in initial metadata since we don't have it yet
-                # We'll try to update it after creation
             }
         }
         
@@ -86,18 +81,6 @@ class CollectionService:
             chroma_collection = chroma_client.create_collection(**collection_params)
             print(f"DEBUG: [create_collection] Successfully created ChromaDB collection")
             
-            # Get the collection's ID from ChromaDB
-            try:
-                # In v0.6.0+, we can get the collection by name and then get its ID
-                collection = chroma_client.get_collection(name=name)
-                collection_id = collection.id
-                # Convert UUID to string to avoid SQLite compatibility issues
-                collection_id_str = str(collection_id) if collection_id else None
-                print(f"DEBUG: [create_collection] Got collection ID: {collection_id_str}")
-            except Exception as e:
-                print(f"WARNING: [create_collection] Could not get collection ID: {e}")
-                collection_id_str = None
-            
             # Create SQLite record
             db_collection = Collection(
                 name=name,
@@ -105,48 +88,20 @@ class CollectionService:
                 owner=owner,
                 visibility=visibility,
                 embeddings_model=json.dumps(embeddings_model),
-                chromadb_uuid=collection_id_str  # Store as string, not UUID object
+                chromadb_uuid=str(chroma_collection)
             )
             db.add(db_collection)
             db.commit()
             db.refresh(db_collection)
-            
-            # Update ChromaDB metadata with SQLite ID
-            if collection_id:
-                try:
-                    collection = chroma_client.get_collection(id=collection_id)
-                    
-                    # Add SQLite ID to metadata if available - using str representation to avoid None
-                    if db_collection.id:
-                        try:
-                            # Note: ChromaDB doesn't support updating metadata directly
-                            # This would need to be implemented differently in a production environment
-                            # This code will have no effect with current ChromaDB versions
-                            metadata = collection.metadata or {}
-                            metadata["sqlite_id"] = str(db_collection.id)
-                            print(f"DEBUG: [create_collection] Added SQLite ID {db_collection.id} to ChromaDB metadata")
-                        except Exception as metadata_error:
-                            print(f"DEBUG: [create_collection] Could not update ChromaDB metadata: {metadata_error}")
-                except Exception as e:
-                    print(f"WARNING: [create_collection] Could not access ChromaDB collection: {e}")
-            
+
+
             return db_collection
+
         except Exception as e:
             print(f"ERROR: [create_collection] Failed to create ChromaDB collection: {str(e)}")
-            import traceback
-            print(f"ERROR: [create_collection] Stack trace:\n{traceback.format_exc()}")
-            
-            # If we already created a SQLite record, we should delete it to avoid inconsistency
-            if 'db_collection' in locals() and db_collection and db_collection.id:
-                print(f"ERROR: [create_collection] Deleting SQLite record {db_collection.id} due to ChromaDB creation failure")
-                try:
-                    db.delete(db_collection)
-                    db.commit()
-                except Exception as db_e:
-                    print(f"ERROR: [create_collection] Failed to delete SQLite record: {str(db_e)}")
-                    # Even if we fail to delete, still raise the original exception
-            
+
             raise
+    
     
     @staticmethod
     def get_collection(db: Session, collection_id: int) -> Optional[Dict[str, Any]]:
