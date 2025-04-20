@@ -4,11 +4,12 @@ URL ingestion plugin for web pages.
 This plugin handles URLs by fetching their content and processing them into chunks.
 Uses Firecrawl Python SDK for web scraping and crawling.
 Supports both cloud and local Firecrawl instances.
+Uses LangChain's RecursiveCharacterTextSplitter for text-structured based chunking.
 """
 
 import os
 import time
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 from dotenv import load_dotenv
 
@@ -22,17 +23,19 @@ FIRECRAWL_API_URL = os.getenv("FIRECRAWL_API_URL", "")
 # Import Firecrawl SDK
 from firecrawl.firecrawl import FirecrawlApp
 
-# Import chunking utilities
-from .chunking import ChunkUnit, split_content
+# Import LangChain text splitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+# Import base plugin classes
 from .base import IngestPlugin, PluginRegistry
 
 
 @PluginRegistry.register
 class URLIngestPlugin(IngestPlugin):
-    """Plugin for ingesting web pages from URLs using Firecrawl."""
+    """Plugin for ingesting web pages from URLs using Firecrawl and LangChain's RecursiveCharacterTextSplitter."""
     
     name = "url_ingest"
-    description = "Ingest web pages from URLs using Firecrawl"
+    description = "Ingest web pages from URLs using Firecrawl and LangChain for chunking"
     supported_file_types = {"url"}
     
     def __init__(self):
@@ -42,20 +45,34 @@ class URLIngestPlugin(IngestPlugin):
         self.firecrawl_app = self._init_firecrawl()
     
     def _init_firecrawl(self):
-        """Initialize Firecrawl app which will use environment variables automatically."""
+        """Initialize Firecrawl app with explicit parameters and proper URL formatting."""
         try:
-            # Log what configuration we're expecting based on environment variables
-            if FIRECRAWL_API_URL:
-                print(f"INFO: [url_ingest] Initializing Firecrawl with custom URL from environment: {FIRECRAWL_API_URL}")
-                if FIRECRAWL_API_KEY:
-                    print(f"INFO: [url_ingest] API key is also provided in environment variables")
-            elif FIRECRAWL_API_KEY:
-                print(f"INFO: [url_ingest] Initializing Firecrawl with API key from environment (cloud service)")
+            # Get API key and URL from environment variables
+            api_key = FIRECRAWL_API_KEY
+            api_url = FIRECRAWL_API_URL
+            
+            # Ensure API URL has a proper scheme
+            if api_url:
+                if not (api_url.startswith('http://') or api_url.startswith('https://')):
+                    api_url = f"https://{api_url}"
+                    print(f"INFO: [url_ingest] Added https:// scheme to API URL: {api_url}")
             else:
-                print(f"INFO: [url_ingest] Initializing Firecrawl with default configuration")
-                
-            # Let FirecrawlApp handle environment variables internally
-            return FirecrawlApp()
+                # Use default API URL if none provided
+                api_url = "https://api.firecrawl.dev"
+                print(f"INFO: [url_ingest] Using default API URL: {api_url}")
+            
+            # Check if API key is required for cloud service
+            if 'api.firecrawl.dev' in api_url and not api_key:
+                print(f"ERROR: [url_ingest] No API key provided for Firecrawl cloud service")
+                raise ValueError("API key required for Firecrawl cloud service")
+            
+            # Log configuration
+            print(f"INFO: [url_ingest] Initializing Firecrawl with API URL: {api_url}")
+            if api_key:
+                print(f"INFO: [url_ingest] API key is provided")
+            
+            # Initialize FirecrawlApp with explicit parameters
+            return FirecrawlApp(api_key=api_key, api_url=api_url)
         except Exception as e:
             print(f"ERROR: [url_ingest] Failed to initialize Firecrawl: {str(e)}")
             raise ImportError(f"Firecrawl SDK required. Please install with: pip install firecrawl-py")
@@ -69,21 +86,12 @@ class URLIngestPlugin(IngestPlugin):
         return {
             "chunk_size": {
                 "type": "integer",
-                "description": "Size of each chunk",
-                "default": 1000,
-                "required": False
-            },
-            "chunk_unit": {
-                "type": "string",
-                "description": "Unit for chunking (char, word, line)",
-                "enum": ["char", "word", "line"],
-                "default": "char",
+                "description": "Size of each chunk (uses LangChain default if not specified)",
                 "required": False
             },
             "chunk_overlap": {
                 "type": "integer",
-                "description": "Number of units to overlap between chunks",
-                "default": 200,
+                "description": "Number of units to overlap between chunks (uses LangChain default if not specified)",
                 "required": False
             },
             "urls": {
@@ -93,28 +101,35 @@ class URLIngestPlugin(IngestPlugin):
             }
         }
     
+
+    
     def ingest(self, file_path: str, **kwargs) -> List[Dict[str, Any]]:
-        """Ingest URLs and split content into chunks using batch processing exclusively.
+        """Ingest URLs and split content into chunks using LangChain's RecursiveCharacterTextSplitter.
         
         Args:
             file_path: Path to a text file containing URLs or a placeholder (not used)
             urls: List of URLs to ingest
-            chunk_size: Size of each chunk (default: 1000)
-            chunk_unit: Unit for chunking - char, word, or line (default: char)
-            chunk_overlap: Number of units to overlap between chunks (default: 200)
+            chunk_size: Size of each chunk (default: uses LangChain default)
+            chunk_overlap: Number of units to overlap between chunks (default: uses LangChain default)
             
         Returns:
             A list of dictionaries, each containing:
                 - text: The chunk text
                 - metadata: A dictionary of metadata for the chunk
         """
-        # Extract parameters with defaults
-        chunk_size = kwargs.get("chunk_size", 1000)
-        chunk_unit = ChunkUnit(kwargs.get("chunk_unit", "char"))
-        chunk_overlap = kwargs.get("chunk_overlap", 200)
+        # Extract parameters
+        chunk_size = kwargs.get("chunk_size", None)
+        chunk_overlap = kwargs.get("chunk_overlap", None)
         urls = kwargs.get("urls", [])
         
-        print(f"INFO: [url_ingest] Ingesting {len(urls)} URLs with chunk_size={chunk_size}, chunk_unit={chunk_unit}, chunk_overlap={chunk_overlap}")
+        # Create parameters dict for RecursiveCharacterTextSplitter initialization
+        splitter_params = {}
+        if chunk_size is not None:
+            splitter_params["chunk_size"] = chunk_size
+        if chunk_overlap is not None:
+            splitter_params["chunk_overlap"] = chunk_overlap
+            
+        print(f"INFO: [url_ingest] Ingesting {len(urls)} URLs with splitter parameters: {splitter_params}")
         
         if not urls:
             raise ValueError("No URLs provided. Please provide a list of URLs to ingest.")
@@ -123,23 +138,15 @@ class URLIngestPlugin(IngestPlugin):
         if isinstance(urls, str):
             urls = [urls]
         
-        # Validate parameters
-        if chunk_size <= 0:
-            raise ValueError("chunk_size must be positive")
-        if chunk_overlap < 0:
-            raise ValueError("chunk_overlap must be non-negative")
-        if chunk_overlap >= chunk_size:
-            raise ValueError("chunk_overlap must be less than chunk_size")
+        # Create RecursiveCharacterTextSplitter with default or provided parameters
+        text_splitter = RecursiveCharacterTextSplitter(**splitter_params)
         
         all_documents = []
         
         # Always use batch processing, even for a single URL
         print(f"INFO: [url_ingest] Starting batch scrape for {len(urls)} URLs")
         batch_params = {
-            'formats': ['markdown'],
-            'pageOptions': {
-                'onlyMainContent': True
-            }
+            'formats': ['markdown']
         }
         
         start_time = time.time()
@@ -171,14 +178,17 @@ class URLIngestPlugin(IngestPlugin):
                             "extension": "url",
                             "file_size": len(content),
                             "file_url": url,
-                            "chunking_strategy": self.name,
-                            "chunk_unit": str(chunk_unit),
-                            "chunk_size": chunk_size,
-                            "chunk_overlap": chunk_overlap
+                            "chunking_strategy": "langchain_recursive_character"
                         }
                         
-                        # Split content into chunks using imported function
-                        chunks = split_content(content, chunk_size, chunk_unit, chunk_overlap)
+                        # Add chunking parameters to metadata if provided
+                        if chunk_size is not None:
+                            base_metadata["chunk_size"] = chunk_size
+                        if chunk_overlap is not None:
+                            base_metadata["chunk_overlap"] = chunk_overlap
+                        
+                        # Split content into chunks using LangChain text splitter
+                        chunks = text_splitter.split_text(content)
                         print(f"INFO: [url_ingest] Content split into {len(chunks)} chunks")
                         
                         # Create result documents with metadata
