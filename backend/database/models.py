@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any
 
 from sqlalchemy import Column, Integer, String, Text, DateTime, JSON, ForeignKey, Enum as SQLAlchemyEnum, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext.mutable import MutableDict
 
 Base = declarative_base()
 
@@ -69,7 +70,7 @@ class Collection(Base):
             "creation_date": self.creation_date.isoformat() if self.creation_date else None,
             "owner": self.owner,
             "visibility": self.visibility.value,
-            "embeddings_model": json.loads(self.embeddings_model) if isinstance(self.embeddings_model, str) else self.embeddings_model,
+            "embeddings_model": self.embeddings_model,
             "chromadb_uuid": self.chromadb_uuid
         }
 

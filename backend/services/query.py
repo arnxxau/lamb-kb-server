@@ -43,7 +43,6 @@ class QueryService:
     @classmethod
     def query_collection(
         cls, 
-        db: Session,
         collection_id: int,
         query_text: str,
         plugin_name: str,
@@ -76,9 +75,9 @@ class QueryService:
             )
         
         try:
-            # Get the collection from SQLite to ensure we use the same embedding function
-            from database.service import CollectionService
-            db_collection = CollectionService.get_collection(db, collection_id)
+            # Get the collection from the service layer to ensure we use the same embedding function
+            from services.collections import CollectionsService
+            db_collection = CollectionsService.get_collection(collection_id)
             if not db_collection:
                 raise HTTPException(
                     status_code=404,
@@ -172,7 +171,6 @@ class QueryService:
                 
                 # Add ChromaDB collection and embedding function to plugin params
                 params = plugin_params.copy()
-                params["db"] = db
                 params["embedding_function"] = collection_embedding_function
                 params["chroma_collection"] = chroma_collection
                 

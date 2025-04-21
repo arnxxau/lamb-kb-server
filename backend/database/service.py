@@ -1,11 +1,12 @@
 """
-Database service module for managing collections.
+Database repository module for managing collections.
 
-This module provides service functions for managing collections in both SQLite and ChromaDB.
+This module provides repository functions for managing collections in both SQLite and ChromaDB.
 """
 
 import os
 import json
+import logging
 import chromadb
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
@@ -13,18 +14,73 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, asc
 
-from .models import Collection, Visibility
-from .connection import get_db, get_chroma_client, get_embedding_function, get_embedding_function_by_params
+from .models import Collection, Visibility, FileRegistry, FileStatus
+from .connection import get_db, get_chroma_client, get_embedding_function, get_embedding_function_by_params, SessionLocal
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class CollectionService:
-    """Service for managing collections in both SQLite and ChromaDB."""
+class CollectionRepository:
+    """Repository for managing collections in both SQLite and ChromaDB."""
+
+    @staticmethod
+    def list_files(collection_id: int, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List files in a collection with optional status filtering.
+        
+        Args:
+            collection_id: ID of the collection
+            status: Optional file status to filter by
+            
+        Returns:
+            List of file registry entries
+        """
+        db = SessionLocal()
+        try:
+            # Query files
+            query = db.query(FileRegistry).filter(FileRegistry.collection_id == collection_id)
+            
+            # Apply status filter if provided
+            if status:
+                try:
+                    file_status = FileStatus(status)
+                    query = query.filter(FileRegistry.status == file_status)
+                except ValueError:
+                    # Handle validation at the service level
+                    pass
+            
+            # Get results
+            files = query.all()
+            
+            return [file.to_dict() for file in files]
+        finally:
+            db.close()
+            
+    @staticmethod
+    def update_file_status(file_id: int, status: FileStatus) -> Optional[Dict[str, Any]]:
+        """Update the status of a file in the registry.
+        
+        Args:
+            file_id: ID of the file registry entry
+            status: New status
+            
+        Returns:
+            Updated file registry entry or None if not found
+        """
+        db = SessionLocal()
+        try:
+            file_registry = db.query(FileRegistry).filter(FileRegistry.id == file_id).first()
+            if file_registry:
+                file_registry.status = status
+                file_registry.updated_at = datetime.utcnow()
+                db.commit()
+                db.refresh(file_registry)
+                return file_registry.to_dict()
+            return None
+        finally:
+            db.close()
     
     @staticmethod
     def create_collection(
-        db: Session,
         name: str,
         owner: str,
         description: Optional[str] = None,
@@ -83,76 +139,87 @@ class CollectionService:
             chroma_collection = chroma_client.create_collection(**collection_params)
             print(f"DEBUG: [create_collection] Successfully created ChromaDB collection")
             
-            # Create SQLite record
-            db_collection = Collection(
-                name=name,
-                description=description,
-                owner=owner,
-                visibility=visibility,
-                embeddings_model=json.dumps(embeddings_model),
-                chromadb_uuid=str(chroma_collection.id)
-            )
-            db.add(db_collection)
-            db.commit()
-            db.refresh(db_collection)
-
-
-            return db_collection
+            # Create SQLite record with a new DB session
+            db = SessionLocal()
+            try:
+                db_collection = Collection(
+                    name=name,
+                    description=description,
+                    owner=owner,
+                    visibility=visibility,
+                    embeddings_model=embeddings_model,
+                    chromadb_uuid=str(chroma_collection.id)
+                )
+                db.add(db_collection)
+                db.commit()
+                db.refresh(db_collection)
+                return db_collection
+            except Exception as e:
+                db.rollback()
+                raise
+            finally:
+                db.close()
 
         except Exception as e:
             print(f"ERROR: [create_collection] Failed to create ChromaDB collection: {str(e)}")
-
             raise
     
 
     @staticmethod
-    def get_collection(db: Session, collection_id: int) -> Optional[Dict[str, Any]]:
+    def get_collection(collection_id: int) -> Optional[Dict[str, Any]]:
         """Get a collection by ID.
         
         Args:
-            db: SQLAlchemy database session
             collection_id: ID of the collection to retrieve
             
         Returns:
             The Collection as a dictionary if found, None otherwise
         """
-        collection = db.query(Collection).filter(Collection.id == collection_id).first()
-        if not collection:
-            return None
-        
-        collection_dict = collection.to_dict()
+        db = SessionLocal()
+        try:
+            collection = db.query(Collection).filter(Collection.id == collection_id).first()
+            if not collection:
+                return None
             
-        return collection_dict
+            collection_dict = collection.to_dict()
+            return collection_dict
+        finally:
+            db.close()
     
     @staticmethod
-    def get_collection_by_name(db: Session, name: str) -> Optional[Collection]:
+    def get_collection_by_name(name: str) -> Optional[Collection]:
         """Get a collection by name.
         
         Args:
-            db: SQLAlchemy database session
             name: Name of the collection to retrieve
             
         Returns:
             The Collection object if found, None otherwise
         """
-        return db.query(Collection).filter(Collection.name == name).first()
+        db = SessionLocal()
+        try:
+            return db.query(Collection).filter(Collection.name == name).first()
+        finally:
+            db.close()
     
     @staticmethod
-    def get_collection_by_chromadb_uuid(db: Session, chromadb_uuid: str) -> Optional[Collection]:
+    def get_collection_by_chromadb_uuid(chromadb_uuid: str) -> Optional[Collection]:
         """Get a collection by ChromaDB UUID.
         
         Args:
-            db: SQLAlchemy database session
             chromadb_uuid: ChromaDB UUID of the collection to retrieve
             
         Returns:
             The Collection object if found, None otherwise
         """
-        return db.query(Collection).filter(Collection.chromadb_uuid == chromadb_uuid).first()
+        db = SessionLocal()
+        try:
+            return db.query(Collection).filter(Collection.chromadb_uuid == chromadb_uuid).first()
+        finally:
+            db.close()
     
     @staticmethod
     def list_collections(
-        db: Session,
         owner: Optional[str] = None,
         visibility: Optional[Visibility] = None,
         skip: int = 0,
@@ -161,7 +228,6 @@ class CollectionService:
         """List collections with optional filtering.
         
         Args:
-            db: Database session
             owner: Optional filter by owner
             visibility: Optional filter by visibility
             skip: Number of collections to skip
@@ -170,23 +236,26 @@ class CollectionService:
         Returns:
             List of collections
         """
-        # Build query
-        query = db.query(Collection)
-        
-        # Apply filters if provided
-        if owner:
-            query = query.filter(Collection.owner == owner)
-        if visibility:
-            query = query.filter(Collection.visibility == visibility)
-        
-        # Apply pagination
-        collections = query.offset(skip).limit(limit).all()
+        db = SessionLocal()
+        try:
+            # Build query
+            query = db.query(Collection)
+            
+            # Apply filters if provided
+            if owner:
+                query = query.filter(Collection.owner == owner)
+            if visibility:
+                query = query.filter(Collection.visibility == visibility)
+            
+            # Apply pagination
+            collections = query.offset(skip).limit(limit).all()
 
-        return [col.to_dict() for col in collections]
+            return [col.to_dict() for col in collections]
+        finally:
+            db.close()
     
-  @staticmethod
+    @staticmethod
     def update_collection(
-        db: Session,
         collection_id: int,
         name: Optional[str] = None,
         description: Optional[str] = None,
@@ -200,7 +269,6 @@ class CollectionService:
         Update a collection's SQLite record and rename ChromaDB collection if needed.
 
         Args:
-            db: SQLAlchemy session
             collection_id: ID of the collection to update
             name: New collection name
             description: New description
@@ -210,71 +278,83 @@ class CollectionService:
             endpoint: New embeddings-model endpoint
             apikey: New embeddings-model API key
         """
-        db_collection = db.query(Collection).get(collection_id)
-        if not db_collection:
-            return None
+        db = SessionLocal()
+        try:
+            db_collection = db.query(Collection).get(collection_id)
+            if not db_collection:
+                return None
 
-        old_name = db_collection.name
+            old_name = db_collection.name
 
-        # Disallow changing model or vendor
-        current_conf = db_collection.embeddings_model or {}
-        if model is not None and model != current_conf.get('model'):
-            logger.warning("Changing 'model' is not supported and will be ignored.")
-        if vendor is not None and vendor != current_conf.get('vendor'):
-            logger.warning("Changing 'vendor' is not supported and will be ignored.")
+            # Disallow changing model or vendor
+            current_conf = db_collection.embeddings_model or {}
+            if model is not None and model != current_conf.get('model'):
+                logger.warning("Changing 'model' is not supported and will be ignored.")
+            if vendor is not None and vendor != current_conf.get('vendor'):
+                logger.warning("Changing 'vendor' is not supported and will be ignored.")
 
+            if name is not None:
+                db_collection.name = name
+            if description is not None:
+                db_collection.description = description
+            if visibility is not None:
+                db_collection.visibility = visibility
 
-        if name is not None:
-            db_collection.name = name
-        if description is not None:
-            db_collection.description = description
-        if visibility is not None:
-            db_collection.visibility = visibility
+            # Only update endpoint and apikey
+            if endpoint is not None:
+                current_conf['api_endpoint'] = endpoint
+            if apikey is not None:
+                current_conf['apikey'] = apikey
+            db_collection.embeddings_model = current_conf
 
-        # Only update endpoint and apikey
-        if endpoint is not None:
-            current_conf['api_endpoint'] = endpoint
-        if apikey is not None:
-            current_conf['apikey'] = apikey
-        db_collection.embeddings_model = current_conf
+            db.commit()
+            db.refresh(db_collection)
 
-        db.commit()
-        db.refresh(db_collection)
+            if name and name != old_name:
+                client = get_chroma_client()
+                chroma_col = client.get_collection(old_name)
+                chroma_col.modify(name=name)
 
-        if name and name != old_name:
-            client = get_chroma_client()
-            chroma_col = client.get_collection(old_name)
-            chroma_col.modify(name=name)
-
-        return db_collection
+            return db_collection
+        except Exception as e:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     
     @staticmethod
-    def delete_collection(db: Session, collection_id: int) -> bool:
+    def delete_collection(collection_id: int) -> bool:
         """Delete a collection from both SQLite and ChromaDB.
         
         Args:
-            db: SQLAlchemy database session
             collection_id: ID of the collection to delete
             
         Returns:
             True if deleted successfully, False otherwise
         """
-        db_collection = db.query(Collection).filter(Collection.id == collection_id).first()
-        
-        if not db_collection:
-            return False
-        
-        # Delete from ChromaDB
-        collection_name = db_collection.name
-        chroma_client = get_chroma_client()
+        db = SessionLocal()
         try:
-            chroma_client.delete_collection(collection_name)
+            db_collection = db.query(Collection).filter(Collection.id == collection_id).first()
+            
+            if not db_collection:
+                return False
+            
+            # Delete from ChromaDB
+            collection_name = db_collection.name
+            chroma_client = get_chroma_client()
+            try:
+                chroma_client.delete_collection(collection_name)
+            except Exception as e:
+                print(f"Error deleting ChromaDB collection: {e}")
+            
+            # Delete from SQLite
+            db.delete(db_collection)
+            db.commit()
+            
+            return True
         except Exception as e:
-            print(f"Error deleting ChromaDB collection: {e}")
-        
-        # Delete from SQLite
-        db.delete(db_collection)
-        db.commit()
-        
-        return True
+            db.rollback()
+            raise
+        finally:
+            db.close()

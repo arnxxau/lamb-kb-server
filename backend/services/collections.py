@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from database.models import Collection, Visibility, FileRegistry, FileStatus
-from database.service import CollectionService as DBCollectionService
+from database.service import CollectionRepository
+from database.ingestion import IngestionRepository
 from services.ingestion import IngestionService
 from schemas.collection import (
     CollectionCreate, 
@@ -30,13 +31,11 @@ class CollectionsService:
     @staticmethod
     def create_collection(
         collection: CollectionCreate,
-        db: Session,
     ) -> Dict[str, Any]:
         """Create a new knowledge base collection.
         
         Args:
             collection: Collection data from request body with resolved default values
-            db: Database session
             
         Returns:
             The created collection
@@ -45,7 +44,7 @@ class CollectionsService:
             HTTPException: If collection creation fails
         """
         # Check if collection with this name already exists
-        existing = DBCollectionService.get_collection_by_name(db, collection.name)
+        existing = CollectionRepository.get_collection_by_name(collection.name)
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -75,8 +74,8 @@ class CollectionsService:
                     # Create a temporary DB collection record for validation
                     from database.models import Collection
                     temp_collection = Collection(id=-1, name="temp_validation", 
-                                                owner="system", description="Validation only", 
-                                                embeddings_model=model_info)
+                                              owner="system", description="Validation only", 
+                                              embeddings_model=model_info)
                     
                     print(f"DEBUG: [create_collection] Validating {model_info.get('vendor')} embeddings with model: {model_info.get('model')}")
                     
@@ -98,8 +97,7 @@ class CollectionsService:
                 embeddings_model = model_info
             
             # Create the collection in both databases
-            db_collection = DBCollectionService.create_collection(
-                db=db,
+            db_collection = CollectionRepository.create_collection(
                 name=collection.name,
                 owner=collection.owner,
                 description=collection.description,
@@ -123,7 +121,6 @@ class CollectionsService:
     
     @staticmethod
     def list_collections(
-        db: Session,
         skip: int = 0,
         limit: int = 100,
         owner: Optional[str] = None,
@@ -132,7 +129,6 @@ class CollectionsService:
         """List all available knowledge base collections with optional filtering.
         
         Args:
-            db: Database session
             skip: Number of collections to skip
             limit: Maximum number of collections to return
             owner: Optional filter by owner
@@ -156,21 +152,15 @@ class CollectionsService:
                 )
         
         # Get collections with filtering
-        collections = DBCollectionService.list_collections(
-            db=db,
+        collections = CollectionRepository.list_collections(
             owner=owner,
             visibility=visibility_enum,
             skip=skip,
             limit=limit
         )
         
-        # Count total collections with same filter
-        query = db.query(Collection)
-        if owner:
-            query = query.filter(Collection.owner == owner)
-        if visibility_enum:
-            query = query.filter(Collection.visibility == visibility_enum)
-        total = query.count()
+        # Get total count from repository
+        total = len(collections)
         
         return {
             "total": total,
@@ -179,14 +169,12 @@ class CollectionsService:
     
     @staticmethod
     def get_collection(
-        collection_id: int,
-        db: Session
+        collection_id: int
     ) -> Dict[str, Any]:
         """Get details of a specific knowledge base collection.
         
         Args:
             collection_id: ID of the collection to retrieve
-            db: Database session
             
         Returns:
             Collection details
@@ -194,7 +182,7 @@ class CollectionsService:
         Raises:
             HTTPException: If collection not found
         """
-        collection = DBCollectionService.get_collection(db, collection_id)
+        collection = CollectionRepository.get_collection(collection_id)
         if not collection:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -205,14 +193,12 @@ class CollectionsService:
     @staticmethod
     def list_files(
         collection_id: int,
-        db: Session,
         status: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """List all files in a collection.
         
         Args:
             collection_id: ID of the collection
-            db: Database session
             status: Optional filter by status
             
         Returns:
@@ -222,45 +208,36 @@ class CollectionsService:
             HTTPException: If collection not found or status invalid
         """
         # Check if collection exists
-        collection = DBCollectionService.get_collection(db, collection_id)
+        collection = CollectionRepository.get_collection(collection_id)
         if not collection:
             raise HTTPException(
                 status_code=404,
                 detail=f"Collection with ID {collection_id} not found"
             )
         
-        # Query files
-        query = db.query(FileRegistry).filter(FileRegistry.collection_id == collection_id)
-        
-        # Apply status filter if provided
+        # Validate status if provided
         if status:
             try:
-                file_status = FileStatus(status)
-                query = query.filter(FileRegistry.status == file_status)
+                FileStatus(status)
             except ValueError:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Invalid status: {status}. Must be one of: completed, processing, failed, deleted"
                 )
         
-        # Get results
-        files = query.all()
-        
-        # Convert to response model
-        return [file.to_dict() for file in files]
+        # Get files from repository
+        return CollectionRepository.list_files(collection_id, status)
     
     @staticmethod
     def update_file_status(
         file_id: int,
-        status: str,
-        db: Session
+        status: str
     ) -> Dict[str, Any]:
         """Update the status of a file in the registry.
         
         Args:
             file_id: ID of the file registry entry
             status: New status
-            db: Database session
             
         Returns:
             Updated file registry entry
@@ -278,11 +255,11 @@ class CollectionsService:
             )
         
         # Update file status
-        file = IngestionService.update_file_status(db, file_id, file_status)
-        if not file:
+        result = CollectionRepository.update_file_status(file_id, file_status)
+        if not result:
             raise HTTPException(
                 status_code=404,
                 detail=f"File with ID {file_id} not found"
             )
         
-        return file.to_dict() 
+        return result

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from database.connection import get_chroma_client, get_embedding_function
 from database.models import Collection
-from database.service import CollectionService
+from services.collections import CollectionsService
 from plugins.base import PluginRegistry, QueryPlugin
 
 
@@ -68,12 +68,8 @@ class SimpleQueryPlugin(QueryPlugin):
         # Extract parameters
         top_k = kwargs.get("top_k", 5)
         threshold = kwargs.get("threshold", 0.0)
-        db = kwargs.get("db")
         embedding_function = kwargs.get("embedding_function")
         chroma_collection = kwargs.get("chroma_collection")
-        
-        if not db:
-            raise ValueError("Database session is required")
             
         # Validate query text
         if not query_text or query_text.strip() == "":
@@ -82,7 +78,7 @@ class SimpleQueryPlugin(QueryPlugin):
         # If ChromaDB collection wasn't provided, get it from the DB
         if not chroma_collection:
             # Get the collection
-            collection = CollectionService.get_collection(db, collection_id)
+            collection = CollectionsService.get_collection(collection_id)
             if not collection:
                 raise ValueError(f"Collection with ID {collection_id} not found")
             

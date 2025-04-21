@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 # Database imports
 from database.connection import init_databases, get_db, get_chroma_client
 from database.models import Collection, Visibility, FileRegistry, FileStatus
-from database.service import CollectionService
+from services.collections import CollectionsService
 from schemas.collection import (
     CollectionCreate, 
     CollectionUpdate, 
@@ -275,8 +275,7 @@ async def query_collection(
     collection_id: int,
     request: QueryRequest,
     plugin_name: str = Query("simple_query", description="Name of the query plugin to use"),
-    token: str = Depends(verify_token),
-    db: Session = Depends(get_db)
+    token: str = Depends(verify_token)
 ):
     """Query a collection using a specified plugin.
     
@@ -285,7 +284,6 @@ async def query_collection(
         request: Query request parameters
         plugin_name: Name of the query plugin to use
         token: Authentication token
-        db: Database session
         
     Returns:
         Query results
@@ -293,12 +291,15 @@ async def query_collection(
     Raises:
         HTTPException: If collection not found, plugin not found, or query fails
     """
-    # Check if collection exists in SQLite
-    collection = CollectionService.get_collection(db, collection_id)
-    if not collection:
+    # Get collection from service layer
+    try:
+        collection = CollectionsService.get_collection(collection_id)
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
             status_code=404,
-            detail=f"Collection with ID {collection_id} not found in database"
+            detail=f"Collection with ID {collection_id} not found in database: {str(e)}"
         )
     
     # Get collection name - handle both dict-like and attribute access
@@ -326,7 +327,6 @@ async def query_collection(
     try:
         # Query the collection
         result = QueryService.query_collection(
-            db=db,
             collection_id=collection_id,
             query_text=request.query_text,
             plugin_name=plugin_name,
@@ -521,12 +521,15 @@ async def upload_file(
     Raises:
         HTTPException: If collection not found or upload fails
     """
-    # Check if collection exists in SQLite
-    collection = CollectionService.get_collection(db, collection_id)
-    if not collection:
+    # Get collection from service layer
+    try:
+        collection = CollectionsService.get_collection(collection_id)
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
             status_code=404,
-            detail=f"Collection with ID {collection_id} not found in database"
+            detail=f"Collection with ID {collection_id} not found in database: {str(e)}"
         )
     
     # Get collection name - handle both dict-like and attribute access
@@ -623,12 +626,15 @@ async def ingest_file(
     Raises:
         HTTPException: If collection or plugin not found, or ingestion fails
     """
-    # Check if collection exists in SQLite
-    collection = CollectionService.get_collection(db, collection_id)
-    if not collection:
+    # Get collection from service layer
+    try:
+        collection = CollectionsService.get_collection(collection_id)
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
             status_code=404,
-            detail=f"Collection with ID {collection_id} not found in database"
+            detail=f"Collection with ID {collection_id} not found in database: {str(e)}"
         )
     
     # Get collection name - handle both dict-like and attribute access
@@ -740,12 +746,15 @@ async def ingest_url_to_collection(
     Raises:
         HTTPException: If collection not found, plugin not found, or ingestion fails
     """
-    # Check if collection exists in SQLite
-    collection = CollectionService.get_collection(db, collection_id)
-    if not collection:
+    # Get collection from service layer
+    try:
+        collection = CollectionsService.get_collection(collection_id)
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
             status_code=404,
-            detail=f"Collection with ID {collection_id} not found in database"
+            detail=f"Collection with ID {collection_id} not found in database: {str(e)}"
         )
         
     # Get collection name - handle both dict-like and attribute access
@@ -1049,12 +1058,15 @@ async def ingest_file_to_collection(
     Raises:
         HTTPException: If collection not found, plugin not found, or ingestion fails
     """
-    # Check if collection exists in SQLite
-    collection = CollectionService.get_collection(db, collection_id)
-    if not collection:
+    # Get collection from service layer
+    try:
+        collection = CollectionsService.get_collection(collection_id)
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
             status_code=404,
-            detail=f"Collection with ID {collection_id} not found in database"
+            detail=f"Collection with ID {collection_id} not found in database: {str(e)}"
         )
         
     # Get collection name - handle both dict-like and attribute access
@@ -1249,15 +1261,13 @@ async def ingest_file_to_collection(
 )
 async def create_collection(
     collection: CollectionCreate, 
-    token: str = Depends(verify_token),
-    db: Session = Depends(get_db)
+    token: str = Depends(verify_token)
 ):
     """Create a new knowledge base collection.
     
     Args:
         collection: Collection data from request body
         token: Authentication token
-        db: Database session
         
     Returns:
         The created collection
@@ -1322,7 +1332,7 @@ async def create_collection(
         collection.embeddings_model = EmbeddingsModel(**resolved_config)
     
     # Now call the service with default values already resolved
-    return CollectionsService.create_collection(collection, db)
+    return CollectionsService.create_collection(collection)
 
 
 # List collections
@@ -1350,7 +1360,6 @@ async def create_collection(
 )
 async def list_collections(
     token: str = Depends(verify_token),
-    db: Session = Depends(get_db),
     skip: int = Query(0, ge=0, description="Number of collections to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of collections to return"),
     owner: str = Query(None, description="Filter by owner"),
@@ -1360,7 +1369,6 @@ async def list_collections(
     
     Args:
         token: Authentication token
-        db: Database session
         skip: Number of collections to skip
         limit: Maximum number of collections to return
         owner: Optional filter by owner
@@ -1370,7 +1378,6 @@ async def list_collections(
         List of collections matching the filter criteria
     """
     return CollectionsService.list_collections(
-        db=db,
         skip=skip,
         limit=limit,
         owner=owner,
@@ -1400,15 +1407,13 @@ async def list_collections(
 )
 async def get_collection(
     collection_id: int,
-    token: str = Depends(verify_token),
-    db: Session = Depends(get_db)
+    token: str = Depends(verify_token)
 ):
     """Get details of a specific knowledge base collection.
     
     Args:
         collection_id: ID of the collection to retrieve
         token: Authentication token
-        db: Database session
         
     Returns:
         Collection details
@@ -1416,7 +1421,7 @@ async def get_collection(
     Raises:
         HTTPException: If collection not found
     """
-    return CollectionsService.get_collection(collection_id, db)
+    return CollectionsService.get_collection(collection_id)
 
 
 # File Registry Endpoints
@@ -1436,7 +1441,6 @@ async def get_collection(
 async def list_files(
     collection_id: int,
     token: str = Depends(verify_token),
-    db: Session = Depends(get_db),
     status: str = Query(None, description="Filter by status (completed, processing, failed, deleted)")
 ):
     """List all files in a collection.
@@ -1444,7 +1448,6 @@ async def list_files(
     Args:
         collection_id: ID of the collection
         token: Authentication token
-        db: Database session
         status: Optional filter by status
         
     Returns:
@@ -1453,7 +1456,7 @@ async def list_files(
     Raises:
         HTTPException: If collection not found
     """
-    return CollectionsService.list_files(collection_id, db, status)
+    return CollectionsService.list_files(collection_id, status)
 
 
 
@@ -1641,8 +1644,7 @@ async def get_file_content(
 async def update_file_status(
     file_id: int,
     status: str = Query(..., description="New status (completed, processing, failed, deleted)"),
-    token: str = Depends(verify_token),
-    db: Session = Depends(get_db)
+    token: str = Depends(verify_token)
 ):
     """Update the status of a file in the registry.
     
@@ -1650,7 +1652,6 @@ async def update_file_status(
         file_id: ID of the file registry entry
         status: New status
         token: Authentication token
-        db: Database session
         
     Returns:
         Updated file registry entry
@@ -1658,4 +1659,4 @@ async def update_file_status(
     Raises:
         HTTPException: If file not found or status invalid
     """
-    return CollectionsService.update_file_status(file_id, status, db)
+    return CollectionsService.update_file_status(file_id, status)
