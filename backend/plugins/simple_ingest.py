@@ -1,23 +1,24 @@
 """
 Simple ingestion plugin for text files.
 
-This plugin handles plain text files (txt, md) with configurable chunking options.
+This plugin handles plain text files (txt, md) with chunking using LangChain's RecursiveCharacterTextSplitter.
 """
 
 import os
-import re
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-from .base import IngestPlugin, ChunkUnit, PluginRegistry
+# Import LangChain text splitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from .base import IngestPlugin, PluginRegistry
 
 
 @PluginRegistry.register
 class SimpleIngestPlugin(IngestPlugin):
-    """Plugin for ingesting simple text files with configurable chunking."""
+    """Plugin for ingesting simple text files with LangChain's RecursiveCharacterTextSplitter."""
     
     name = "simple_ingest"
-    description = "Ingest text files with configurable chunking options"
+    description = "Ingest text files with LangChain's RecursiveCharacterTextSplitter"
     supported_file_types = {"txt", "md", "markdown", "text"}
     
     def get_parameters(self) -> Dict[str, Dict[str, Any]]:
@@ -29,33 +30,23 @@ class SimpleIngestPlugin(IngestPlugin):
         return {
             "chunk_size": {
                 "type": "integer",
-                "description": "Size of each chunk",
-                "default": 1000,
-                "required": False
-            },
-            "chunk_unit": {
-                "type": "string",
-                "description": "Unit for chunking (char, word, line)",
-                "enum": ["char", "word", "line"],
-                "default": "char",
+                "description": "Size of each chunk (uses LangChain default if not specified)",
                 "required": False
             },
             "chunk_overlap": {
                 "type": "integer",
-                "description": "Number of units to overlap between chunks",
-                "default": 200,
+                "description": "Number of units to overlap between chunks (uses LangChain default if not specified)",
                 "required": False
             }
         }
     
     def ingest(self, file_path: str, **kwargs) -> List[Dict[str, Any]]:
-        """Ingest a text file and split it into chunks.
+        """Ingest a text file and split it into chunks using LangChain's RecursiveCharacterTextSplitter.
         
         Args:
             file_path: Path to the file to ingest
-            chunk_size: Size of each chunk (default: 1000)
-            chunk_unit: Unit for chunking - char, word, or line (default: char)
-            chunk_overlap: Number of units to overlap between chunks (default: 200)
+            chunk_size: Size of each chunk (default: uses LangChain default)
+            chunk_overlap: Number of units to overlap between chunks (default: uses LangChain default)
             file_url: URL to access the file (default: None)
             
         Returns:
@@ -63,19 +54,17 @@ class SimpleIngestPlugin(IngestPlugin):
                 - text: The chunk text
                 - metadata: A dictionary of metadata for the chunk
         """
-        # Extract parameters with defaults
-        chunk_size = kwargs.get("chunk_size", 1000)
-        chunk_unit = ChunkUnit(kwargs.get("chunk_unit", "char"))
-        chunk_overlap = kwargs.get("chunk_overlap", 200)
+        # Extract parameters
+        chunk_size = kwargs.get("chunk_size", None)
+        chunk_overlap = kwargs.get("chunk_overlap", None)
         file_url = kwargs.get("file_url", "")
         
-        # Validate parameters
-        if chunk_size <= 0:
-            raise ValueError("chunk_size must be positive")
-        if chunk_overlap < 0:
-            raise ValueError("chunk_overlap must be non-negative")
-        if chunk_overlap >= chunk_size:
-            raise ValueError("chunk_overlap must be less than chunk_size")
+        # Create parameters dict for RecursiveCharacterTextSplitter initialization
+        splitter_params = {}
+        if chunk_size is not None:
+            splitter_params["chunk_size"] = chunk_size
+        if chunk_overlap is not None:
+            splitter_params["chunk_overlap"] = chunk_overlap
         
         # Read the file
         try:
@@ -96,18 +85,24 @@ class SimpleIngestPlugin(IngestPlugin):
             "filename": file_name,
             "extension": file_extension,
             "file_size": file_size,
-            "file_url": file_url,  # Include the URL to access the file
-            "chunking_strategy": self.name,
-            "chunk_unit": str(chunk_unit),  # Convert to string to ensure it's serializable
-            "chunk_size": chunk_size,
-            "chunk_overlap": chunk_overlap
+            "file_url": file_url,
+            "chunking_strategy": "langchain_recursive_character"
         }
         
-        # Split content into chunks based on the specified unit and size
+        # Add chunking parameters to metadata if provided
+        if chunk_size is not None:
+            base_metadata["chunk_size"] = chunk_size
+        if chunk_overlap is not None:
+            base_metadata["chunk_overlap"] = chunk_overlap
+        
+        # Create RecursiveCharacterTextSplitter with default or provided parameters
+        text_splitter = RecursiveCharacterTextSplitter(**splitter_params)
+        
+        # Split content into chunks using LangChain
         try:
-            chunks = self._split_content(content, chunk_size, chunk_unit, chunk_overlap)
+            chunks = text_splitter.split_text(content)
         except Exception as e:
-            raise
+            raise ValueError(f"Error splitting content into chunks: {str(e)}")
         
         # Create result documents with metadata
         result = []
@@ -125,138 +120,3 @@ class SimpleIngestPlugin(IngestPlugin):
             })
         
         return result
-    
-    def _split_content(self, content: str, chunk_size: int, 
-                      chunk_unit: ChunkUnit, chunk_overlap: int) -> List[str]:
-        """Split content into chunks based on the specified unit and size.
-        
-        Args:
-            content: Text content to split
-            chunk_size: Size of each chunk
-            chunk_unit: Unit for chunking (char, word, line)
-            chunk_overlap: Number of units to overlap between chunks
-            
-        Returns:
-            List of content chunks
-        """
-
-        
-        try:
-            result = None
-            if chunk_unit == ChunkUnit.CHAR:
-                result = self._split_by_chars(content, chunk_size, chunk_overlap)
-            elif chunk_unit == ChunkUnit.WORD:
-                result = self._split_by_words(content, chunk_size, chunk_overlap)
-            elif chunk_unit == ChunkUnit.LINE:
-                result = self._split_by_lines(content, chunk_size, chunk_overlap)
-            else:
-                raise ValueError(f"Unsupported chunk unit: {chunk_unit}")
-                
-            return result
-            
-        except Exception as e:
-            raise
-    
-    def _split_by_chars(self, content: str, chunk_size: int, chunk_overlap: int) -> List[str]:
-        """Split content by characters.
-        
-        Args:
-            content: Text content to split
-            chunk_size: Number of characters per chunk
-            chunk_overlap: Number of characters to overlap
-            
-        Returns:
-            List of content chunks
-        """
-        chunks = []
-        start = 0
-        content_len = len(content)
-        
-        iteration = 0
-        
-        while start < content_len:
-            iteration += 1
-            if iteration > 100:  # Safeguard against infinite loops
-                break
-                
-            end = min(start + chunk_size, content_len)
-            chunk = content[start:end]
-            chunks.append(chunk)
-            start = end - chunk_overlap
-        
-        return chunks
-    
-    def _split_by_words(self, content: str, chunk_size: int, chunk_overlap: int) -> List[str]:
-        """Split content by words.
-        
-        Args:
-            content: Text content to split
-            chunk_size: Number of words per chunk
-            chunk_overlap: Number of words to overlap
-            
-        Returns:
-            List of content chunks
-        """
-        # Split into words (considering punctuation and whitespace)
-        words = re.findall(r'\S+|\s+', content)
-        chunks = []
-        
-        start = 0
-        words_len = len(words)
-        
-        iteration = 0
-        
-        while start < words_len:
-            iteration += 1
-            if iteration > 1000:  # Safeguard against infinite loops with a higher limit for words
-                break
-                
-            end = min(start + chunk_size, words_len)
-            chunk = ''.join(words[start:end])
-            chunks.append(chunk)
-            # Store the previous start position to detect lack of progress
-            prev_start = start
-            start = end - chunk_overlap
-            
-            # Handle negative or unchanged start value to prevent infinite loops
-            if start < 0 or (start >= end and start < words_len) or start == prev_start:
-                break
-        
-        return chunks
-    
-    def _split_by_lines(self, content: str, chunk_size: int, chunk_overlap: int) -> List[str]:
-        """Split content by lines.
-        
-        Args:
-            content: Text content to split
-            chunk_size: Number of lines per chunk
-            chunk_overlap: Number of lines to overlap
-            
-        Returns:
-            List of content chunks
-        """
-        lines = content.splitlines(keepends=True)  # Keep line endings
-        chunks = []
-        
-        start = 0
-        lines_len = len(lines)
-        
-        iteration = 0
-        
-        while start < lines_len:
-            iteration += 1
-            if iteration > 1000:  # Safeguard against infinite loops
-                break
-                
-            end = min(start + chunk_size, lines_len)
-            chunk = ''.join(lines[start:end])
-            chunks.append(chunk)
-            # Store the previous start position to detect lack of progress
-            prev_start = start
-            start = end - chunk_overlap
-            
-            # Handle negative or unchanged start value to prevent infinite loops
-            if start < 0 or (start >= end and start < lines_len) or start == prev_start:
-                break
-        
-        return chunks

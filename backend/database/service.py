@@ -210,7 +210,6 @@ class CollectionService:
             endpoint: New embeddings-model endpoint
             apikey: New embeddings-model API key
         """
-        # Fetch existing record
         db_collection = db.query(Collection).get(collection_id)
         if not db_collection:
             return None
@@ -224,7 +223,7 @@ class CollectionService:
         if vendor is not None and vendor != current_conf.get('vendor'):
             logger.warning("Changing 'vendor' is not supported and will be ignored.")
 
-        # Apply permitted updates
+
         if name is not None:
             db_collection.name = name
         if description is not None:
@@ -239,11 +238,9 @@ class CollectionService:
             current_conf['apikey'] = apikey
         db_collection.embeddings_model = current_conf
 
-        # Commit SQLite changes
         db.commit()
         db.refresh(db_collection)
 
-        # Rename ChromaDB collection if name changed
         if name and name != old_name:
             client = get_chroma_client()
             chroma_col = client.get_collection(old_name)

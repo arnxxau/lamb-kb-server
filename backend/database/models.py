@@ -42,12 +42,15 @@ class Collection(Base):
     creation_date = Column(DateTime, default=datetime.datetime.utcnow)
     owner = Column(String(255), nullable=False, index=True)
     visibility = Column(SQLAlchemyEnum(Visibility), default=Visibility.PRIVATE, nullable=False)
-    embeddings_model = Column(JSON, nullable=False, 
-                              default=lambda: json.dumps({
-                                  "model": "sentence-transformers/all-MiniLM-L6-v2",
-                                  "endpoint": None,
-                                  "apikey": None
-                              }))
+    embeddings_model = Column(
+        MutableDict.as_mutable(JSON),
+        nullable=False,
+        default=lambda: {
+            "model": "sentence-transformers/all-MiniLM-L6-v2",
+            "endpoint": None,
+            "apikey": None,
+        }
+    )
     chromadb_uuid = Column(String(36), nullable=True, unique=True, index=True)
     
     __table_args__ = (

@@ -76,11 +76,9 @@ class CollectionsService:
                     from database.models import Collection
                     temp_collection = Collection(id=-1, name="temp_validation", 
                                                 owner="system", description="Validation only", 
-                                                embeddings_model=json.dumps(model_info))
+                                                embeddings_model=model_info)
                     
-                    # No logging of API key details, only log the vendor and model
-                    if model_info.get('vendor', '').lower() == 'openai':
-                        print(f"DEBUG: [create_collection] Validating OpenAI embeddings with model: {model_info.get('model')}")
+                    print(f"DEBUG: [create_collection] Validating {model_info.get('vendor')} embeddings with model: {model_info.get('model')}")
                     
                     # Try to create an embedding function with this configuration
                     # This will validate if the embeddings model configuration is valid
@@ -89,6 +87,7 @@ class CollectionsService:
                     # Test the embedding function with a simple text
                     test_result = embedding_function(["Test embedding validation"])
                     print(f"INFO: Embeddings validation successful, dimensions: {len(test_result[0])}")
+
                 except Exception as emb_error:
                     print(f"ERROR: Embeddings model validation failed: {str(emb_error)}")
                     raise HTTPException(
@@ -107,15 +106,7 @@ class CollectionsService:
                 visibility=visibility,
                 embeddings_model=embeddings_model
             )
-            
-            # Ensure embeddings_model is a dictionary before returning
-            if isinstance(db_collection.embeddings_model, str):
-                try:
-                    db_collection.embeddings_model = json.loads(db_collection.embeddings_model)
-                except (json.JSONDecodeError, TypeError):
-                    # If we can't parse it, return an empty dict rather than failing
-                    db_collection.embeddings_model = {}
-            
+
             # Verify the collection was created successfully in both databases
             if not db_collection.chromadb_uuid:
                 raise HTTPException(

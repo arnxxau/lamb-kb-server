@@ -11,3 +11,4 @@ flask>=2.3.0
 requests>=2.31.0
 firecrawl==1.7.0
 langchain-text-splitters
+ollama
