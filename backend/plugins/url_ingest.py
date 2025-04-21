@@ -9,9 +9,13 @@ Uses LangChain's RecursiveCharacterTextSplitter for text-structured based chunki
 
 import os
 import time
+import logging
 from typing import Dict, List, Any, Optional
 
 from dotenv import load_dotenv
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -52,17 +56,17 @@ class URLIngestPlugin(IngestPlugin):
             
             if not api_url:
                 api_url = "https://api.firecrawl.dev"
-                print(f"INFO: [url_ingest] Using default API URL: {api_url}")
+                logger.info(f"Using default API URL: {api_url}")
 
             if 'api.firecrawl.dev' in api_url and not api_key:
-                print(f"ERROR: [url_ingest] No API key provided for Firecrawl cloud service")
+                logger.error(f"No API key provided for Firecrawl cloud service")
                 raise ValueError("API key required for Firecrawl cloud service")
             
-            print(f"INFO: [url_ingest] Initializing Firecrawl with API URL: {api_url}")
+            logger.info(f"Initializing Firecrawl with API URL: {api_url}")
             return FirecrawlApp(api_key=api_key, api_url=api_url)
 
         except Exception as e:
-            print(f"ERROR: [url_ingest] Failed to initialize Firecrawl: {str(e)}")
+            logger.error(f"Failed to initialize Firecrawl: {str(e)}")
             raise ValueError(f"{str(e)}")
     
     def get_parameters(self) -> Dict[str, Dict[str, Any]]:
@@ -117,7 +121,7 @@ class URLIngestPlugin(IngestPlugin):
         if chunk_overlap is not None:
             splitter_params["chunk_overlap"] = chunk_overlap
             
-        print(f"INFO: [url_ingest] Ingesting {len(urls)} URLs with splitter parameters: {splitter_params}")
+        logger.info(f"Ingesting {len(urls)} URLs with splitter parameters: {splitter_params}")
         
         if not urls:
             raise ValueError("No URLs provided. Please provide a list of URLs to ingest.")
@@ -132,7 +136,7 @@ class URLIngestPlugin(IngestPlugin):
         all_documents = []
         
         # Always use batch processing, even for a single URL
-        print(f"INFO: [url_ingest] Starting batch scrape for {len(urls)} URLs")
+        logger.info(f"Starting batch scrape for {len(urls)} URLs")
         batch_params = {
             'formats': ['markdown']
         }
@@ -141,9 +145,9 @@ class URLIngestPlugin(IngestPlugin):
         batch_result = self.firecrawl_app.batch_scrape_urls(urls, batch_params)
         elapsed_time = time.time() - start_time
         
-        print(f"INFO: [url_ingest] Batch scrape completed in {elapsed_time:.2f} seconds")
-        print(f"INFO: [url_ingest] Batch response status: {batch_result.get('status')}")
-        print(f"INFO: [url_ingest] Batch response data count: {len(batch_result.get('data', []))}")
+        logger.info(f"Batch scrape completed in {elapsed_time:.2f} seconds")
+        logger.info(f"Batch response status: {batch_result.get('status')}")
+        logger.info(f"Batch response data count: {len(batch_result.get('data', []))}")
         
         # Process batch results
         if batch_result and "data" in batch_result and batch_result.get("status") == "completed":
@@ -155,10 +159,10 @@ class URLIngestPlugin(IngestPlugin):
                     if "markdown" in result:
                         content = result["markdown"]
                         content_length = len(content)
-                        print(f"INFO: [url_ingest] URL {url} content extracted: {content_length} chars")
+                        logger.info(f"URL {url} content extracted: {content_length} chars")
                     
                     if content:
-                        print(f"INFO: [url_ingest] Processing content for URL: {url}")
+                        logger.info(f"Processing content for URL: {url}")
                         # Create base metadata for this URL
                         base_metadata = {
                             "source": url,
@@ -177,7 +181,7 @@ class URLIngestPlugin(IngestPlugin):
                         
                         # Split content into chunks using LangChain text splitter
                         chunks = text_splitter.split_text(content)
-                        print(f"INFO: [url_ingest] Content split into {len(chunks)} chunks")
+                        logger.info(f"Content split into {len(chunks)} chunks")
                         
                         # Create result documents with metadata
                         for j, chunk_text in enumerate(chunks):
@@ -192,14 +196,14 @@ class URLIngestPlugin(IngestPlugin):
                                 "metadata": chunk_metadata
                             })
                     else:
-                        print(f"WARNING: [url_ingest] No markdown content found for URL {url} in batch response")
+                        logger.warning(f"No markdown content found for URL {url} in batch response")
                 except Exception as e:
-                    print(f"ERROR: [url_ingest] Failed to process batch result for URL {url}: {str(e)}")
+                    logger.error(f"Failed to process batch result for URL {url}: {str(e)}")
                     continue
         else:
             error_msg = f"Batch processing failed with status: {batch_result.get('status', 'unknown')}"
-            print(f"ERROR: [url_ingest] {error_msg}")
+            logger.error(f"{error_msg}")
             raise ValueError(error_msg)
         
-        print(f"INFO: [url_ingest] Completed processing for {len(urls)} URLs, generated {len(all_documents)} document chunks")
+        logger.info(f"Completed processing for {len(urls)} URLs, generated {len(all_documents)} document chunks")
         return all_documents

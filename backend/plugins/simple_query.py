@@ -5,12 +5,16 @@ This plugin performs a simple similarity search on a collection.
 """
 
 import time
+import logging
 from typing import Dict, List, Any, Optional
 
 from sqlalchemy.orm import Session
 
-from database.connection import get_chroma_client, get_embedding_function
-from database.models import Collection
+# Set up logging
+logger = logging.getLogger(__name__)
+
+from repository.connection import get_chroma_client, get_embedding_function
+from repository.models import Collection
 from services.collections import CollectionsService
 from plugins.base import PluginRegistry, QueryPlugin
 
@@ -90,11 +94,11 @@ class SimpleQueryPlugin(QueryPlugin):
             try:
                 # Get the embedding function for this collection if not provided
                 if not embedding_function:
-                    print(f"DEBUG: [simple_query] Getting embedding function from collection")
+                    logger.debug(f"Getting embedding function from collection")
                     collection_id_for_embedding = collection['id'] if isinstance(collection, dict) else collection.id
                     embedding_function = get_embedding_function(collection_id_for_embedding)
                 else:
-                    print(f"DEBUG: [simple_query] Using provided embedding function")
+                    logger.debug(f"Using provided embedding function")
                 
                 # Get the collection with the embedding function
                 try:
@@ -115,7 +119,7 @@ class SimpleQueryPlugin(QueryPlugin):
                             is_likely_uuid = False
                         
                         if is_likely_uuid:
-                            print(f"DEBUG: [SimpleQueryPlugin] Collection name appears to be a UUID, trying as UUID")
+                            logger.debug(f"Collection name appears to be a UUID, trying as UUID")
                             chroma_collection = chroma_client.get_collection(
                                 name=collection_name,
                                 embedding_function=embedding_function
@@ -127,7 +131,7 @@ class SimpleQueryPlugin(QueryPlugin):
             except Exception as e:
                 raise ValueError(f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection. Error: {str(e)}")
         else:
-            print(f"DEBUG: [simple_query] Using provided ChromaDB collection")
+            logger.debug(f"Using provided ChromaDB collection")
         
         # Record start time
         start_time = time.time()

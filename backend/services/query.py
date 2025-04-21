@@ -5,12 +5,21 @@ This module provides services for querying collections using query plugins.
 """
 
 import time
+import logging
 from typing import Dict, List, Any, Optional
 
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from plugins.base import PluginRegistry, QueryPlugin
+from exceptions import (
+    ResourceNotFoundException,
+    ValidationException,
+    PluginNotFoundException,
+    ProcessingException
+)
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 class QueryService:
@@ -55,7 +64,6 @@ class QueryService:
         the same embedding model is used for both ingestion and querying.
         
         Args:
-            db: Database session
             collection_id: ID of the collection
             query_text: Query text
             plugin_name: Name of the plugin to use
@@ -65,32 +73,28 @@ class QueryService:
             Query results with timing information
             
         Raises:
-            HTTPException: If the plugin is not found or query fails
+            PluginNotFoundException: If the plugin is not found
+            ResourceNotFoundException: If the collection is not found
+            ProcessingException: If the query fails
         """
         plugin = cls.get_plugin(plugin_name)
         if not plugin:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Query plugin '{plugin_name}' not found"
-            )
+            raise PluginNotFoundException(f"Query plugin '{plugin_name}' not found")
         
         try:
-            # Get the collection from the service layer to ensure we use the same embedding function
-            from services.collections import CollectionsService
-            db_collection = CollectionsService.get_collection(collection_id)
+            # Get the collection directly from repository to avoid circular import
+            from repository.collections import CollectionRepository
+            db_collection = CollectionRepository.get_collection(collection_id)
             if not db_collection:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Collection with ID {collection_id} not found"
-                )
+                raise ResourceNotFoundException(f"Collection with ID {collection_id} not found")
             
             # Get the embedding function for this collection using the SQLite record
-            from database.connection import get_embedding_function, get_chroma_client
+            from repository.connection import get_embedding_function, get_chroma_client
             try:
                 # Create embedding function from collection record
-                print(f"DEBUG: [query_collection] Creating embedding function from collection record")
+                logger.debug(f"Creating embedding function from collection record")
                 collection_embedding_function = get_embedding_function(db_collection)
-                print(f"DEBUG: [query_collection] Created embedding function: {collection_embedding_function is not None}")
+                logger.debug(f"Created embedding function: {collection_embedding_function is not None}")
                 
                 # Verify ChromaDB collection exists and is accessible with this embedding function
                 chroma_client = get_chroma_client()
@@ -103,26 +107,25 @@ class QueryService:
                 if collections and isinstance(collections[0], str):
                     # ChromaDB v0.6.0+ - collections is a list of strings
                     collection_exists = db_collection["name"] in collections
-                    print(f"DEBUG: [query_collection] Using ChromaDB v0.6.0+ API: collections are strings")
+                    logger.debug(f"Using ChromaDB v0.6.0+ API: collections are strings")
                 else:
                     # Older ChromaDB - collections is a list of objects with name attribute
                     try:
                         collection_exists = any(col.name == db_collection["name"] for col in collections)
-                        print(f"DEBUG: [query_collection] Using older ChromaDB API: collections have name attribute")
+                        logger.debug(f"Using older ChromaDB API: collections have name attribute")
                     except (AttributeError, NotImplementedError):
                         # Fall back to checking if we can get the collection
                         try:
                             chroma_client.get_collection(name=db_collection["name"])
                             collection_exists = True
-                            print(f"DEBUG: [query_collection] Verified collection exists by get_collection")
+                            logger.debug(f"Verified collection exists by get_collection")
                         except Exception:
                             collection_exists = False
                 
                 if not collection_exists:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Collection '{db_collection['name']}' exists in database but not in ChromaDB. "
-                              f"This indicates data inconsistency. Please recreate the collection."
+                    raise ProcessingException(
+                        f"Collection '{db_collection['name']}' exists in database but not in ChromaDB. "
+                          f"This indicates data inconsistency. Please recreate the collection."
                     )
                 
                 # Get the ChromaDB collection with our embedding function
@@ -136,7 +139,7 @@ class QueryService:
                                 name=db_collection["chromadb_uuid"],
                                 embedding_function=collection_embedding_function
                             )
-                            print(f"DEBUG: [query_collection] Retrieved collection by UUID as name: {db_collection['chromadb_uuid']}")
+                            logger.debug(f"Retrieved collection by UUID as name: {db_collection['chromadb_uuid']}")
                         except Exception as e1:
                             # If that fails, try with the collection name
                             try:
@@ -144,11 +147,10 @@ class QueryService:
                                     name=db_collection["name"],
                                     embedding_function=collection_embedding_function
                                 )
-                                print(f"DEBUG: [query_collection] Retrieved collection by name: {db_collection['name']}")
+                                logger.debug(f"Retrieved collection by name: {db_collection['name']}")
                             except Exception as e2:
-                                raise HTTPException(
-                                    status_code=500,
-                                    detail=f"Failed to get collection from ChromaDB. Errors: {str(e1)}, {str(e2)}"
+                                raise ProcessingException(
+                                    f"Failed to get collection from ChromaDB. Errors: {str(e1)}, {str(e2)}"
                                 )
                     else:
                         # Fall back to name-based retrieval
@@ -157,16 +159,14 @@ class QueryService:
                                 name=db_collection["name"],
                                 embedding_function=collection_embedding_function
                             )
-                            print(f"DEBUG: [query_collection] Retrieved collection by name: {db_collection['name']}")
+                            logger.debug(f"Retrieved collection by name: {db_collection['name']}")
                         except Exception as e:
-                            raise HTTPException(
-                                status_code=500,
-                                detail=f"Failed to get collection '{db_collection['name']}' from ChromaDB. Error: {str(e)}"
+                            raise ProcessingException(
+                                f"Failed to get collection '{db_collection['name']}' from ChromaDB. Error: {str(e)}"
                             )
                 except Exception as e:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to get collection from ChromaDB. Error: {str(e)}"
+                    raise ProcessingException(
+                        f"Failed to get collection from ChromaDB. Error: {str(e)}"
                     )
                 
                 # Add ChromaDB collection and embedding function to plugin params
@@ -178,16 +178,11 @@ class QueryService:
                 embedding_config = db_collection["embeddings_model"]
                 vendor = embedding_config.get("vendor", "")
                 model_name = embedding_config.get("model", "")
-                print(f"DEBUG: [query_collection] Using embeddings - vendor: {vendor}, model: {model_name}")
+                logger.debug(f"Using embeddings - vendor: {vendor}, model: {model_name}")
                 
             except Exception as ef_e:
-                print(f"DEBUG: [query_collection] ERROR preparing embedding function: {str(ef_e)}")
-                import traceback
-                print(f"DEBUG: [query_collection] Stack trace:\n{traceback.format_exc()}")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to prepare embedding function: {str(ef_e)}"
-                )
+                logger.error(f"ERROR preparing embedding function: {str(ef_e)}", exc_info=True)
+                raise ProcessingException(f"Failed to prepare embedding function: {str(ef_e)}")
             
             # Record start time
             start_time = time.time()
@@ -216,10 +211,9 @@ class QueryService:
                     "model": model_name
                 }
             }
-        except HTTPException as e:
-            raise e
+        except (ResourceNotFoundException, PluginNotFoundException, ProcessingException):
+            # Re-raise domain exceptions
+            raise
         except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Failed to query collection: {str(e)}"
-            )
+            logger.error(f"Failed to query collection: {str(e)}", exc_info=True)
+            raise ProcessingException(f"Failed to query collection: {str(e)}")

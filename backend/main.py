@@ -1,17 +1,22 @@
 import os
 import json
+import logging
 from typing import Dict, Any, List, Optional
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
     # Load the environment variables from .env file
     load_dotenv()
-    print(f"INFO: Environment variables loaded from .env file")
-    print(f"INFO: EMBEDDINGS_VENDOR={os.getenv('EMBEDDINGS_VENDOR')}")
-    print(f"INFO: EMBEDDINGS_MODEL={os.getenv('EMBEDDINGS_MODEL')}")
+    logger.info("Environment variables loaded from .env file")
+    logger.info(f"EMBEDDINGS_VENDOR={os.getenv('EMBEDDINGS_VENDOR')}")
+    logger.info(f"EMBEDDINGS_MODEL={os.getenv('EMBEDDINGS_MODEL')}")
 except ImportError:
-    print("WARNING: python-dotenv not installed, environment variables must be set manually")
+    logger.warning("python-dotenv not installed, environment variables must be set manually")
 
 from fastapi import Depends, FastAPI, HTTPException, status, Query, File, Form, UploadFile, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -19,12 +24,14 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exception_handlers import http_exception_handler
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-# Database imports
-from database.connection import init_databases, get_db, get_chroma_client
-from database.models import Collection, Visibility, FileRegistry, FileStatus
+# Repository imports
+from repository.connection import init_databases, get_db, get_chroma_client
+from repository.models import Collection, Visibility, FileRegistry, FileStatus
 from services.collections import CollectionsService
 from schemas.collection import (
     CollectionCreate, 
@@ -32,6 +39,22 @@ from schemas.collection import (
     CollectionResponse, 
     CollectionList,
     EmbeddingsModel
+)
+
+# Import domain exceptions
+from exceptions import (
+    DomainException,
+    ResourceNotFoundException,
+    ValidationException,
+    ResourceAlreadyExistsException,
+    ConfigurationException,
+    ProcessingException,
+    AuthenticationException,
+    AuthorizationException,
+    DatabaseException,
+    PluginNotFoundException,
+    ExternalServiceException,
+    FileNotFoundException
 )
 
 # Import ingestion modules
@@ -58,6 +81,9 @@ from schemas.query import (
     QueryPluginInfo
 )
 
+# Setup logging
+logger = logging.getLogger(__name__)
+
 # Import file registry schemas
 class FileRegistryResponse(BaseModel):
     """Model for file registry entry response"""
@@ -78,15 +104,6 @@ class FileRegistryResponse(BaseModel):
 
 # Get API key from environment variable or use default
 API_KEY = os.getenv("LAMB_API_KEY", "0p3n-w3bu!")
-
-# Get default embeddings model configuration from environment variables
-# Default to using Ollama with nomic-embed-text model
-# For OpenAI models, the environment variables should be set accordingly
-DEFAULT_EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "nomic-embed-text")
-DEFAULT_EMBEDDINGS_VENDOR = os.getenv("EMBEDDINGS_VENDOR", "ollama")  # 'ollama', 'local', or 'openai'
-DEFAULT_EMBEDDINGS_APIKEY = os.getenv("EMBEDDINGS_APIKEY", "")
-# Default endpoint for Ollama
-DEFAULT_EMBEDDINGS_ENDPOINT = os.getenv("EMBEDDINGS_ENDPOINT", "http://localhost:11434/api/embeddings")
 
 # Response models
 class HealthResponse(BaseModel):
@@ -137,6 +154,85 @@ app = FastAPI(
     },
 )
 
+# Exception handlers to convert domain exceptions to HTTP responses
+@app.exception_handler(ResourceNotFoundException)
+async def resource_not_found_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={"detail": str(exc)},
+    )
+
+@app.exception_handler(ValidationException)
+async def validation_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": str(exc)},
+    )
+
+@app.exception_handler(ResourceAlreadyExistsException)
+async def resource_already_exists_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": str(exc)},
+    )
+
+@app.exception_handler(ConfigurationException)
+async def configuration_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": str(exc)},
+    )
+
+@app.exception_handler(ProcessingException)
+async def processing_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": str(exc)},
+    )
+
+@app.exception_handler(AuthenticationException)
+async def authentication_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        content={"detail": str(exc)},
+    )
+
+@app.exception_handler(AuthorizationException)
+async def authorization_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={"detail": str(exc)},
+    )
+
+@app.exception_handler(DatabaseException)
+async def database_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": str(exc)},
+    )
+
+@app.exception_handler(PluginNotFoundException)
+async def plugin_not_found_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={"detail": str(exc)},
+    )
+
+@app.exception_handler(FileNotFoundException)
+async def file_not_found_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={"detail": str(exc)},
+    )
+
+@app.exception_handler(DomainException)
+async def domain_exception_handler(request, exc):
+    """Catch-all handler for any other domain exceptions."""
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": str(exc)},
+    )
+
 # Security scheme with documentation
 security = HTTPBearer(
     scheme_name="Bearer Authentication",
@@ -170,19 +266,19 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
 @app.on_event("startup")
 async def startup_event():
     """Initialize databases and perform sanity checks on startup."""
-    print("Initializing databases...")
+    logger.info("Initializing databases...")
     init_status = init_databases()
     
     if init_status["errors"]:
         for error in init_status["errors"]:
-            print(f"ERROR: {error}")
+            logger.error(f"{error}")
     else:
-        print("Databases initialized successfully.")
+        logger.info("Databases initialized successfully.")
     
     # Discover ingestion plugins
-    print("Discovering ingestion plugins...")
+    logger.info("Discovering ingestion plugins...")
     discover_plugins("plugins")
-    print(f"Found {len(IngestionService.list_plugins())} ingestion plugins")
+    logger.info(f"Found {len(IngestionService.list_plugins())} ingestion plugins")
     
     # Ensure static directory exists
     IngestionService._ensure_dirs()
@@ -291,30 +387,6 @@ async def query_collection(
     Raises:
         HTTPException: If collection not found, plugin not found, or query fails
     """
-    # Get collection from service layer
-    try:
-        collection = CollectionsService.get_collection(collection_id)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection with ID {collection_id} not found in database: {str(e)}"
-        )
-    
-    # Get collection name - handle both dict-like and attribute access
-    collection_name = collection['name'] if isinstance(collection, dict) else collection.name
-        
-    # Also verify ChromaDB collection exists
-    try:
-        chroma_client = get_chroma_client()
-        chroma_collection = chroma_client.get_collection(name=collection_name)
-    except Exception as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection."
-        )
-    
     # Prepare plugin parameters
     plugin_params = request.plugin_params or {}
     
@@ -326,17 +398,17 @@ async def query_collection(
     
     try:
         # Query the collection
-        result = QueryService.query_collection(
+        return QueryService.query_collection(
             collection_id=collection_id,
             query_text=request.query_text,
             plugin_name=plugin_name,
             plugin_params=plugin_params
         )
-        
-        return result
-    except HTTPException as e:
-        raise e
+    except DomainException:
+        # Domain exceptions will be caught by the exception handlers
+        raise
     except Exception as e:
+        logger.error(f"Failed to query collection: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to query collection: {str(e)}"
@@ -426,28 +498,35 @@ async def database_status(token: str = Depends(verify_token), db: Session = Depe
     Returns:
         A dictionary with database status information
     """
-    # Re-initialize databases to get fresh status
-    db_status = init_databases()
-    
-    # Count collections in SQLite
-    collections_count = db.query(Collection).count()
-    
-    # Get ChromaDB collections
-    chroma_client = get_chroma_client()
-    chroma_collections = chroma_client.list_collections()
-    
-    return {
-        "sqlite_status": {
-            "initialized": db_status["sqlite_initialized"],
-            "schema_valid": db_status["sqlite_schema_valid"],
-            "errors": db_status.get("errors", [])
-        },
-        "chromadb_status": {
-            "initialized": db_status["chromadb_initialized"],
-            "collections_count": len(chroma_collections)
-        },
-        "collections_count": collections_count
-    }
+    try:
+        # Re-initialize databases to get fresh status
+        db_status = init_databases()
+        
+        # Count collections in SQLite
+        collections_count = db.query(Collection).count()
+        
+        # Get ChromaDB collections
+        chroma_client = get_chroma_client()
+        chroma_collections = chroma_client.list_collections()
+        
+        return {
+            "sqlite_status": {
+                "initialized": db_status["sqlite_initialized"],
+                "schema_valid": db_status["sqlite_schema_valid"],
+                "errors": db_status.get("errors", [])
+            },
+            "chromadb_status": {
+                "initialized": db_status["chromadb_initialized"],
+                "collections_count": len(chroma_collections)
+            },
+            "collections_count": collections_count
+        }
+    except Exception as e:
+        logger.error(f"Failed to get database status: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get database status: {str(e)}"
+        )
 
 
 # Ingestion Plugin Endpoints
@@ -521,33 +600,13 @@ async def upload_file(
     Raises:
         HTTPException: If collection not found or upload fails
     """
-    # Get collection from service layer
     try:
-        collection = CollectionsService.get_collection(collection_id)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection with ID {collection_id} not found in database: {str(e)}"
-        )
-    
-    # Get collection name - handle both dict-like and attribute access
-    collection_name = collection['name'] if isinstance(collection, dict) else collection.name
-    collection_owner = collection['owner'] if isinstance(collection, dict) else collection.owner
+        # Verify collection exists in both SQLite and ChromaDB
+        collection = IngestionService.verify_collection_exists(collection_id)
+        collection_name = collection['name'] if isinstance(collection, dict) else collection.name
+        collection_owner = collection['owner'] if isinstance(collection, dict) else collection.owner
         
-    # Also verify ChromaDB collection exists
-    try:
-        chroma_client = get_chroma_client()
-        chroma_collection = chroma_client.get_collection(name=collection_name)
-    except Exception as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection."
-        )
-    
-    # Save the file
-    try:
+        # Save the file
         file_info = IngestionService.save_uploaded_file(
             file=file,
             owner=collection_owner,
@@ -562,7 +621,11 @@ async def upload_file(
             "collection_id": collection_id,
             "collection_name": collection_name
         }
+    except DomainException:
+        # Domain exceptions will be caught by the exception handlers
+        raise
     except Exception as e:
+        logger.error(f"Failed to upload file: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to upload file: {str(e)}"
@@ -626,41 +689,17 @@ async def ingest_file(
     Raises:
         HTTPException: If collection or plugin not found, or ingestion fails
     """
-    # Get collection from service layer
     try:
-        collection = CollectionsService.get_collection(collection_id)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection with ID {collection_id} not found in database: {str(e)}"
-        )
-    
-    # Get collection name - handle both dict-like and attribute access
-    collection_name = collection['name'] if isinstance(collection, dict) else collection.name
+        # Verify collection exists
+        IngestionService.verify_collection_exists(collection_id)
         
-    # Also verify ChromaDB collection exists
-    try:
-        chroma_client = get_chroma_client()
-        chroma_collection = chroma_client.get_collection(name=collection_name)
-    except Exception as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection."
-        )
-    
-    # Parse plugin parameters
-    try:
-        params = json.loads(plugin_params)
-    except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid JSON in plugin_params"
-        )
-    
-    # Process the file
-    try:
+        # Parse plugin parameters
+        try:
+            params = json.loads(plugin_params)
+        except json.JSONDecodeError:
+            raise ValidationException("Invalid JSON in plugin_params")
+        
+        # Process the file
         documents = IngestionService.ingest_file(
             file_path=file_path,
             plugin_name=plugin_name,
@@ -672,14 +711,15 @@ async def ingest_file(
             "document_count": len(documents),
             "documents": documents
         }
-    except HTTPException as e:
-        raise e
+    except DomainException:
+        # Domain exceptions will be caught by the exception handlers
+        raise
     except Exception as e:
+        logger.error(f"Failed to ingest file: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to ingest file: {str(e)}"
         )
-
 
 
 @app.post(
@@ -730,9 +770,6 @@ async def ingest_url_to_collection(
 ):
     """Ingest content from URLs directly into a collection.
 
-    This endpoint fetches content from specified URLs, processes it with the URL ingestion plugin,
-    and adds the content to the collection.
-
     Args:
         collection_id: ID of the collection
         request: Request with URLs and processing parameters
@@ -746,181 +783,20 @@ async def ingest_url_to_collection(
     Raises:
         HTTPException: If collection not found, plugin not found, or ingestion fails
     """
-    # Get collection from service layer
     try:
-        collection = CollectionsService.get_collection(collection_id)
-    except HTTPException:
+        return IngestionService.ingest_url_to_collection(
+            collection_id=collection_id,
+            urls=request.urls,
+            plugin_name=request.plugin_name,
+            plugin_params=request.plugin_params,
+            db=db,
+            background_tasks=background_tasks
+        )
+    except DomainException:
+        # Domain exceptions will be caught by the exception handlers
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection with ID {collection_id} not found in database: {str(e)}"
-        )
-        
-    # Get collection name - handle both dict-like and attribute access
-    collection_name = collection['name'] if isinstance(collection, dict) else collection.name
-        
-    # Also verify ChromaDB collection exists
-    try:
-        chroma_client = get_chroma_client()
-        chroma_collection = chroma_client.get_collection(name=collection_name)
-    except Exception as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection."
-        )
-    
-    # Check if plugin exists
-    plugin_name = request.plugin_name
-    plugin = IngestionService.get_plugin(plugin_name)
-    if not plugin:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Ingestion plugin '{plugin_name}' not found"
-        )
-    
-    # Check if URLs are provided
-    if not request.urls:
-        raise HTTPException(
-            status_code=400,
-            detail="No URLs provided"
-        )
-    
-    try:
-        # Create a temporary file to track this URL ingestion
-        import tempfile
-        import uuid
-        import os
-        
-        temp_dir = os.path.join(tempfile.gettempdir(), "url_ingestion")
-        os.makedirs(temp_dir, exist_ok=True)
-        temp_file_path = os.path.join(temp_dir, f"{uuid.uuid4().hex}.url")
-        
-        # Write URLs to the temporary file (just for tracking)
-        with open(temp_file_path, "w") as f:
-            for url in request.urls:
-                f.write(f"{url}\n")
-        
-        # Step 1: Register the URL ingestion in the FileRegistry with PROCESSING status
-        # Store the first URL as the filename to make it easier to display and preview
-        first_url = request.urls[0] if request.urls else "unknown_url"
-        file_registry = IngestionService.register_file(
-            db=db,
-            collection_id=collection_id,
-            file_path=temp_file_path,
-            file_url=first_url,  # Store the URL for direct access
-            original_filename=first_url,  # Use the first URL as the original filename for better display
-            plugin_name="url_ingest",  # Ensure consistent plugin name
-            plugin_params={"urls": request.urls, **request.plugin_params},
-            owner=collection["owner"] if isinstance(collection, dict) else collection.owner,
-            document_count=0,  # Will be updated after processing
-            content_type="text/plain",
-            status=FileStatus.PROCESSING  # Set initial status to PROCESSING
-        )
-        
-        # Step 2: Schedule background task for processing and adding documents
-        def process_urls_in_background(urls: List[str], plugin_name: str, params: dict, 
-                                   collection_id: int, file_registry_id: int):
-            try:
-                print(f"DEBUG: [background_task] Started processing URLs: {', '.join(urls[:3])}...")
-                
-                # Create a new session for the background task
-                from database.connection import SessionLocal
-                db_background = SessionLocal()
-                
-                try:
-                    # Make a placeholder file path for the URL ingestion
-                    import tempfile
-                    temp_file = tempfile.NamedTemporaryFile(delete=False)
-                    temp_file_path = temp_file.name
-                    temp_file.close()
-                    
-                    # Step 2.1: Process URLs with plugin
-                    # Add URLs to the plugin parameters
-                    full_params = {**params, "urls": urls}
-                    
-                    documents = IngestionService.ingest_file(
-                        file_path=temp_file_path,  # This is just a placeholder
-                        plugin_name=plugin_name,
-                        plugin_params=full_params
-                    )
-                    
-                    # Step 2.2: Add documents to collection
-                    result = IngestionService.add_documents_to_collection(
-                        db=db_background,
-                        collection_id=collection_id,
-                        documents=documents
-                    )
-                    
-                    # Step 2.3: Update file registry with completed status and document count
-                    IngestionService.update_file_status(
-                        db=db_background, 
-                        file_id=file_registry_id, 
-                        status=FileStatus.COMPLETED
-                    )
-                    
-                    # Update document count
-                    file_reg = db_background.query(FileRegistry).filter(FileRegistry.id == file_registry_id).first()
-                    if file_reg:
-                        file_reg.document_count = len(documents)
-                        db_background.commit()
-                    
-                    # Clean up the temporary file
-                    try:
-                        os.unlink(temp_file_path)
-                    except:
-                        pass
-                    
-                    print(f"DEBUG: [background_task] Completed processing URLs with {len(documents)} documents")
-                finally:
-                    db_background.close()
-                    
-            except Exception as e:
-                print(f"ERROR: [background_task] Failed to process URLs: {str(e)}")
-                import traceback
-                print(f"ERROR: [background_task] Stack trace:\n{traceback.format_exc()}")
-                
-                # Update file status to FAILED
-                try:
-                    from database.connection import SessionLocal
-                    db_error = SessionLocal()
-                    try:
-                        IngestionService.update_file_status(
-                            db=db_error, 
-                            file_id=file_registry_id, 
-                            status=FileStatus.FAILED
-                        )
-                    finally:
-                        db_error.close()
-                except Exception:
-                    print(f"ERROR: [background_task] Could not update file status to FAILED")
-        
-        # Add the task to background tasks
-        background_tasks.add_task(
-            process_urls_in_background, 
-            request.urls, 
-            plugin_name, 
-            request.plugin_params, 
-            collection_id, 
-            file_registry.id
-        )
-        
-        # Return immediate response with URL information
-        return {
-            "collection_id": collection_id,
-            "collection_name": collection_name,
-            "documents_added": 0,  # Initially 0 since processing will happen in background
-            "success": True,
-            "file_path": temp_file_path,
-            "file_url": "",
-            "original_filename": f"urls_{len(request.urls)}",
-            "plugin_name": plugin_name,
-            "file_registry_id": file_registry.id,
-            "status": "processing"
-        }
-    except HTTPException as e:
-        raise e
-    except Exception as e:
+        logger.error(f"Failed to ingest URLs: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to ingest URLs: {str(e)}"
@@ -988,9 +864,11 @@ async def add_documents(
         )
         
         return result
-    except HTTPException as e:
-        raise e
+    except DomainException:
+        # Domain exceptions will be caught by the exception handlers
+        raise
     except Exception as e:
+        logger.error(f"Failed to add documents to collection: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to add documents to collection: {str(e)}"
@@ -1040,9 +918,6 @@ async def ingest_file_to_collection(
 ):
     """Ingest a file directly into a collection using a specified plugin.
     
-    This endpoint combines file upload, processing with the specified plugin,
-    and adding to the collection in a single operation.
-    
     Args:
         collection_id: ID of the collection
         file: The file to upload and ingest
@@ -1058,162 +933,26 @@ async def ingest_file_to_collection(
     Raises:
         HTTPException: If collection not found, plugin not found, or ingestion fails
     """
-    # Get collection from service layer
     try:
-        collection = CollectionsService.get_collection(collection_id)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection with ID {collection_id} not found in database: {str(e)}"
-        )
+        # Parse plugin parameters
+        try:
+            params = json.loads(plugin_params)
+        except json.JSONDecodeError:
+            raise ValidationException("Invalid JSON in plugin_params")
         
-    # Get collection name - handle both dict-like and attribute access
-    collection_name = collection['name'] if isinstance(collection, dict) else collection.name
-        
-    # Also verify ChromaDB collection exists
-    try:
-        chroma_client = get_chroma_client()
-        chroma_collection = chroma_client.get_collection(name=collection_name)
-    except Exception as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection '{collection_name}' exists in database but not in ChromaDB. Please recreate the collection."
-        )
-    
-    # Check if plugin exists
-    plugin = IngestionService.get_plugin(plugin_name)
-    if not plugin:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Ingestion plugin '{plugin_name}' not found"
-        )
-    
-    # Parse plugin parameters
-    try:
-        params = json.loads(plugin_params)
-    except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid JSON in plugin_params"
-        )
-    
-    try:
-        # Step 1: Upload file (this step remains synchronous)
-        file_info = IngestionService.save_uploaded_file(
-            file=file,
-            owner=collection["owner"] if isinstance(collection, dict) else collection.owner,
-            collection_name=collection_name
-        )
-        file_path = file_info["file_path"]
-        file_url = file_info["file_url"]
-        original_filename = file_info["original_filename"]
-        owner = collection["owner"] if isinstance(collection, dict) else collection.owner
-        
-        # Step 2: Register the file in the FileRegistry with PROCESSING status
-        file_registry = IngestionService.register_file(
-            db=db,
+        return IngestionService.ingest_file_to_collection(
             collection_id=collection_id,
-            file_path=file_path,
-            file_url=file_url,
-            original_filename=original_filename,
+            file=file,
             plugin_name=plugin_name,
             plugin_params=params,
-            owner=owner,
-            document_count=0,  # Will be updated after processing
-            content_type=file.content_type,
-            status=FileStatus.PROCESSING  # Set initial status to PROCESSING
+            db=db,
+            background_tasks=background_tasks
         )
-        
-        # Step 3: Schedule background task for processing and adding documents
-        def process_file_in_background(file_path: str, plugin_name: str, params: dict, 
-                                     collection_id: int, file_registry_id: int):
-            try:
-                print(f"DEBUG: [background_task] Started processing file: {file_path}")
-                
-                # Create a new session for the background task
-                from database.connection import SessionLocal
-                db_background = SessionLocal()
-                
-                try:
-                    # Step 3.1: Process file with plugin
-                    documents = IngestionService.ingest_file(
-                        file_path=file_path,
-                        plugin_name=plugin_name,
-                        plugin_params=params
-                    )
-                    
-                    # Step 3.2: Add documents to collection
-                    result = IngestionService.add_documents_to_collection(
-                        db=db_background,
-                        collection_id=collection_id,
-                        documents=documents
-                    )
-                    
-                    # Step 3.3: Update file registry with completed status and document count
-                    IngestionService.update_file_status(
-                        db=db_background, 
-                        file_id=file_registry_id, 
-                        status=FileStatus.COMPLETED
-                    )
-                    
-                    # Update document count
-                    file_reg = db_background.query(FileRegistry).filter(FileRegistry.id == file_registry_id).first()
-                    if file_reg:
-                        file_reg.document_count = len(documents)
-                        db_background.commit()
-                    
-                    print(f"DEBUG: [background_task] Completed processing file {file_path} with {len(documents)} documents")
-                finally:
-                    db_background.close()
-                    
-            except Exception as e:
-                print(f"ERROR: [background_task] Failed to process file {file_path}: {str(e)}")
-                import traceback
-                print(f"ERROR: [background_task] Stack trace:\n{traceback.format_exc()}")
-                
-                # Update file status to FAILED
-                try:
-                    from database.connection import SessionLocal
-                    db_error = SessionLocal()
-                    try:
-                        IngestionService.update_file_status(
-                            db=db_error, 
-                            file_id=file_registry_id, 
-                            status=FileStatus.FAILED
-                        )
-                    finally:
-                        db_error.close()
-                except Exception:
-                    print(f"ERROR: [background_task] Could not update file status to FAILED")
-        
-        # Add the task to background tasks
-        background_tasks.add_task(
-            process_file_in_background, 
-            file_path, 
-            plugin_name, 
-            params, 
-            collection_id, 
-            file_registry.id
-        )
-        
-        # Return immediate response with file information
-        return {
-            "collection_id": collection_id,
-            "collection_name": collection_name,
-            "documents_added": 0,  # Initially 0 since processing will happen in background
-            "success": True,
-            "file_path": file_path,
-            "file_url": file_url,
-            "original_filename": original_filename,
-            "plugin_name": plugin_name,
-            "file_registry_id": file_registry.id,
-            "status": "processing"
-        }
-    except HTTPException as e:
-        raise e
+    except DomainException:
+        # Domain exceptions will be caught by the exception handlers
+        raise
     except Exception as e:
+        logger.error(f"Failed to ingest file: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to ingest file: {str(e)}"
@@ -1275,63 +1014,7 @@ async def create_collection(
     Raises:
         HTTPException: If collection creation fails
     """
-    # Resolve default values for embeddings_model before passing to service
-    if collection.embeddings_model:
-        model_info = collection.embeddings_model.model_dump()
-        resolved_config = {}
-        
-        # Resolve vendor
-        vendor = model_info.get("vendor")
-        if vendor == "default":
-            vendor = os.getenv("EMBEDDINGS_VENDOR")
-            if not vendor:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="EMBEDDINGS_VENDOR environment variable not set but 'default' specified"
-                )
-        resolved_config["vendor"] = vendor
-        
-        # Resolve model
-        model = model_info.get("model")
-        if model == "default":
-            model = os.getenv("EMBEDDINGS_MODEL")
-            if not model:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="EMBEDDINGS_MODEL environment variable not set but 'default' specified"
-                )
-        resolved_config["model"] = model
-        
-        # Resolve API key (optional)
-        api_key = model_info.get("apikey")
-        if api_key == "default":
-            api_key = os.getenv("EMBEDDINGS_APIKEY", "")
-        
-        # Only log whether we have a key or not, never log the key itself or its contents
-        if vendor == "openai":
-            print(f"INFO: [main.create_collection] Using OpenAI API key: {'[PROVIDED]' if api_key else '[MISSING]'}")
-            
-        resolved_config["apikey"] = api_key
-        
-        # Resolve API endpoint (needed for some vendors like Ollama)
-        api_endpoint = model_info.get("api_endpoint")
-        if api_endpoint == "default":
-            api_endpoint = os.getenv("EMBEDDINGS_ENDPOINT")
-            if not api_endpoint and vendor == "ollama":
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="EMBEDDINGS_ENDPOINT environment variable not set but 'default' specified for Ollama"
-                )
-        if api_endpoint:  # Only add if not None
-            resolved_config["api_endpoint"] = api_endpoint
-            
-        # Log the resolved configuration
-        print(f"INFO: [main.create_collection] Resolved embeddings config: {resolved_config}")
-        
-        # Replace default values with resolved values in the collection object
-        collection.embeddings_model = EmbeddingsModel(**resolved_config)
-    
-    # Now call the service with default values already resolved
+    # Domain exceptions will be handled by exception handlers
     return CollectionsService.create_collection(collection)
 
 
@@ -1424,6 +1107,71 @@ async def get_collection(
     return CollectionsService.get_collection(collection_id)
 
 
+@app.patch(
+    "/collections/{collection_id}",
+    response_model=CollectionResponse,
+    summary="Update collection",
+    description="""Update details of a specific knowledge base collection.
+    
+    Example:
+    ```bash
+    curl -X PATCH 'http://localhost:9090/collections/1' \
+      -H 'Authorization: Bearer 0p3n-w3bu!' \
+      -H 'Content-Type: application/json' \
+      -d '{
+        "name": "Updated Collection Name",
+        "description": "Updated description",
+        "visibility": "public",
+        "embeddings_model": {
+          "vendor": "openai",
+          "model": "text-embedding-ada-002",
+          "apikey": "your-api-key",
+          "api_endpoint": null
+        }
+      }'
+    ```
+    """,
+    tags=["Collections"],
+    responses={
+        200: {"description": "Updated collection details"},
+        401: {"description": "Unauthorized - Invalid or missing authentication token"},
+        404: {"description": "Not found - Collection not found"},
+        422: {"description": "Validation error - Invalid data"},
+        500: {"description": "Server error"}
+    }
+)
+async def update_collection(
+    collection_id: int,
+    update_data: CollectionUpdate,
+    token: str = Depends(verify_token)
+):
+    """Update details of a specific knowledge base collection.
+    
+    Args:
+        collection_id: ID of the collection to update
+        update_data: Collection data to update
+        token: Authentication token
+        
+    Returns:
+        Updated collection details
+        
+    Raises:
+        HTTPException: If collection not found or validation fails
+    """
+    embeddings_model = update_data.embeddings_model
+    
+    return CollectionsService.update_collection(
+        collection_id=collection_id,
+        name=update_data.name,
+        description=update_data.description,
+        visibility=update_data.visibility,
+        model=embeddings_model.model if embeddings_model else None,
+        vendor=embeddings_model.vendor if embeddings_model else None,
+        endpoint=embeddings_model.api_endpoint if embeddings_model else None,
+        apikey=embeddings_model.apikey if embeddings_model else None
+    )
+
+
 # File Registry Endpoints
 @app.get(
     "/collections/{collection_id}/files",
@@ -1459,7 +1207,6 @@ async def list_files(
     return CollectionsService.list_files(collection_id, status)
 
 
-
 @app.get(
     "/files/{file_id}/content",
     summary="Get file content",
@@ -1493,138 +1240,15 @@ async def get_file_content(
         HTTPException: If file not found or content cannot be retrieved
     """
     try:
-        # Get file registry entry
-        file_registry = db.query(FileRegistry).filter(FileRegistry.id == file_id).first()
-        if not file_registry:
-            raise HTTPException(
-                status_code=404,
-                detail=f"File with ID {file_id} not found"
-            )
-        
-        # Get the file content based on the plugin type
-        file_content = ""
-        content_type = "text"
-        
-        # Get collection for any file type
-        collection = db.query(Collection).filter(Collection.id == file_registry.collection_id).first()
-        if not collection:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Collection with ID {file_registry.collection_id} not found"
-            )
-            
-        # Get database content from ChromaDB
-        from database.connection import get_chroma_client
-        
-        # Get ChromaDB client and collection
-        chroma_client = get_chroma_client()
-        chroma_collection = chroma_client.get_collection(name=collection.name)
-        
-        # Get the source filename/url
-        source = file_registry.original_filename
-        
-        # Get the file type and plugin name
-        plugin_name = file_registry.plugin_name
-        
-        # Set the appropriate file type based on extension or plugin
-        original_extension = ""
-        if "." in source:
-            original_extension = source.split(".")[-1].lower()
-            
-        # Determine content type based on file extension or plugin name
-        if plugin_name == "url_ingest" or source.startswith(("http://", "https://")):
-            content_type = "markdown"  # URL content from firecrawl is markdown
-        elif original_extension in ["md", "markdown"]:
-            content_type = "markdown"
-        elif original_extension in ["txt", "text"]:
-            content_type = "text"
-        else:
-            content_type = "text"  # Default to text
-            
-        # Query ChromaDB for documents with this source
-        results = chroma_collection.get(
-            where={"source": source}, 
-            include=["documents", "metadatas"]
-        )
-        
-        if not results or not results["documents"] or len(results["documents"]) == 0:
-            # Try other fields if "source" doesn't work
-            results = chroma_collection.get(
-                where={"filename": source}, 
-                include=["documents", "metadatas"]
-            )
-            
-        if not results or not results["documents"] or len(results["documents"]) == 0:
-            # For regular files, the source field might be the file path
-            # Try to find by just the filename part
-            import os
-            filename = os.path.basename(source)
-            if filename:
-                results = chroma_collection.get(
-                    where={"filename": filename}, 
-                    include=["documents", "metadatas"]
-                )
-                
-        if not results or not results["documents"] or len(results["documents"]) == 0:
-            # If we still haven't found it, check if there's a physical file we can read
-            if os.path.exists(file_registry.file_path) and os.path.isfile(file_registry.file_path):
-                try:
-                    with open(file_registry.file_path, 'r', encoding='utf-8') as f:
-                        file_content = f.read()
-                        
-                    return {
-                        "file_id": file_id,
-                        "original_filename": source,
-                        "content": file_content,
-                        "content_type": content_type,
-                        "chunk_count": 1,
-                        "timestamp": file_registry.updated_at.isoformat() if file_registry.updated_at else None
-                    }
-                except Exception as e:
-                    print(f"Error reading file from disk: {str(e)}")
-                    # Continue to error handling
-            
-            raise HTTPException(
-                status_code=404,
-                detail=f"No content found for file: {source}"
-            )
-        
-        # Reconstruct the content from chunks
-        # First sort by chunk_index
-        chunk_docs = []
-        for i, doc in enumerate(results["documents"]):
-            if i < len(results["metadatas"]) and results["metadatas"][i]:
-                metadata = results["metadatas"][i]
-                chunk_docs.append({
-                    "text": doc,
-                    "index": metadata.get("chunk_index", i),
-                    "count": metadata.get("chunk_count", 0)
-                })
-        
-        # Sort chunks by index
-        chunk_docs.sort(key=lambda x: x["index"])
-        
-        # Join all chunks
-        full_content = "\n".join(doc["text"] for doc in chunk_docs)
-        
-        # Return content with metadata
-        return {
-            "file_id": file_id,
-            "original_filename": source,
-            "content": full_content,
-            "content_type": content_type,
-            "chunk_count": len(chunk_docs),
-            "timestamp": file_registry.updated_at.isoformat() if file_registry.updated_at else None
-        }
-    except HTTPException as e:
-        raise e
+        return IngestionService.get_file_content(file_id, db)
+    except DomainException:
+        # Domain exceptions will be caught by the exception handlers
+        raise
     except Exception as e:
-        import traceback
-        print(f"Error retrieving file content: {str(e)}")
-        print(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"Failed to get file content: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve file content: {str(e)}"
+            detail=f"Failed to get file content: {str(e)}"
         )
 
 
