@@ -16,6 +16,8 @@ from sqlalchemy import desc, asc
 from .models import Collection, Visibility
 from .connection import get_db, get_chroma_client, get_embedding_function, get_embedding_function_by_params
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class CollectionService:
     """Service for managing collections in both SQLite and ChromaDB."""
@@ -88,7 +90,7 @@ class CollectionService:
                 owner=owner,
                 visibility=visibility,
                 embeddings_model=json.dumps(embeddings_model),
-                chromadb_uuid=str(chroma_collection)
+                chromadb_uuid=str(chroma_collection.id)
             )
             db.add(db_collection)
             db.commit()
@@ -102,7 +104,7 @@ class CollectionService:
 
             raise
     
-    
+
     @staticmethod
     def get_collection(db: Session, collection_id: int) -> Optional[Dict[str, Any]]:
         """Get a collection by ID.
@@ -118,13 +120,7 @@ class CollectionService:
         if not collection:
             return None
         
-        # Convert to dictionary and ensure embeddings_model is deserialized
         collection_dict = collection.to_dict()
-        if isinstance(collection_dict['embeddings_model'], str):
-            try:
-                collection_dict['embeddings_model'] = json.loads(collection_dict['embeddings_model'])
-            except (json.JSONDecodeError, TypeError):
-                collection_dict['embeddings_model'] = {}
             
         return collection_dict
     
@@ -185,84 +181,76 @@ class CollectionService:
         
         # Apply pagination
         collections = query.offset(skip).limit(limit).all()
-        
-        # Convert to dictionary and ensure embeddings_model is deserialized
-        result = []
-        for collection in collections:
-            collection_dict = collection.to_dict()
-            if isinstance(collection_dict['embeddings_model'], str):
-                try:
-                    collection_dict['embeddings_model'] = json.loads(collection_dict['embeddings_model'])
-                except (json.JSONDecodeError, TypeError):
-                    collection_dict['embeddings_model'] = {}
-            result.append(collection_dict)
-        
-        return result
+
+        return [col.to_dict() for col in collections]
     
-    @staticmethod
+  @staticmethod
     def update_collection(
         db: Session,
         collection_id: int,
         name: Optional[str] = None,
         description: Optional[str] = None,
         visibility: Optional[Visibility] = None,
-        embeddings_model: Optional[Dict[str, Any]] = None
+        model: Optional[str] = None,
+        vendor: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        apikey: Optional[str] = None
     ) -> Optional[Collection]:
-        """Update a collection.
-        
-        Args:
-            db: SQLAlchemy database session
-            collection_id: ID of the collection to update
-            name: Optional new name
-            description: Optional new description
-            visibility: Optional new visibility
-            embeddings_model: Optional new embeddings model configuration
-            
-        Returns:
-            The updated Collection object if found, None otherwise
         """
-        db_collection = db.query(Collection).filter(Collection.id == collection_id).first()
-        
+        Update a collection's SQLite record and rename ChromaDB collection if needed.
+
+        Args:
+            db: SQLAlchemy session
+            collection_id: ID of the collection to update
+            name: New collection name
+            description: New description
+            visibility: New visibility setting
+            model: (NOT SUPPORTED) Attempt to change embeddings model name
+            vendor: (NOT SUPPORTED) Attempt to change embeddings vendor
+            endpoint: New embeddings-model endpoint
+            apikey: New embeddings-model API key
+        """
+        # Fetch existing record
+        db_collection = db.query(Collection).get(collection_id)
         if not db_collection:
             return None
-        
-        # Update SQLite collection
-        update_data = {}
+
+        old_name = db_collection.name
+
+        # Disallow changing model or vendor
+        current_conf = db_collection.embeddings_model or {}
+        if model is not None and model != current_conf.get('model'):
+            logger.warning("Changing 'model' is not supported and will be ignored.")
+        if vendor is not None and vendor != current_conf.get('vendor'):
+            logger.warning("Changing 'vendor' is not supported and will be ignored.")
+
+        # Apply permitted updates
         if name is not None:
-            update_data["name"] = name
+            db_collection.name = name
         if description is not None:
-            update_data["description"] = description
+            db_collection.description = description
         if visibility is not None:
-            update_data["visibility"] = visibility
-        if embeddings_model is not None:
-            update_data["embeddings_model"] = embeddings_model
-        
-        for key, value in update_data.items():
-            setattr(db_collection, key, value)
-        
+            db_collection.visibility = visibility
+
+        # Only update endpoint and apikey
+        if endpoint is not None:
+            current_conf['api_endpoint'] = endpoint
+        if apikey is not None:
+            current_conf['apikey'] = apikey
+        db_collection.embeddings_model = current_conf
+
+        # Commit SQLite changes
         db.commit()
         db.refresh(db_collection)
-        
-        # Update ChromaDB collection metadata if name was not changed
-        # (if name was changed, we would need to recreate the collection in ChromaDB)
-        if name is None:
-            chroma_client = get_chroma_client()
-            try:
-                chroma_collection = chroma_client.get_collection(db_collection.name)
-                
-                # Update metadata
-                metadata = chroma_collection.metadata or {}
-                if description is not None:
-                    metadata["description"] = description
-                if visibility is not None:
-                    metadata["visibility"] = visibility.value
-                
-                # Cannot update collection metadata directly in ChromaDB, 
-                # would need to recreate in a real implementation
-            except Exception as e:
-                print(f"Error updating ChromaDB collection: {e}")
-        
+
+        # Rename ChromaDB collection if name changed
+        if name and name != old_name:
+            client = get_chroma_client()
+            chroma_col = client.get_collection(old_name)
+            chroma_col.modify(name=name)
+
         return db_collection
+
     
     @staticmethod
     def delete_collection(db: Session, collection_id: int) -> bool:
