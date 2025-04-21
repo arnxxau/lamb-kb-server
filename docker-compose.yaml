@@ -1,0 +1,65 @@
+version: '3.8'
+services:
+  # API Server 
+  kb-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: lamb-kb-server
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./backend:/app
+      - kb-data:/app/data
+      - static-files:/app/static
+      - ./backend/.env:/app/.env:ro
+    environment:
+      - LAMB_API_KEY=${LAMB_API_KEY:-0p3n-w3bu!}
+      - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - EMBEDDINGS_VENDOR=${EMBEDDINGS_VENDOR:-local}
+      - EMBEDDINGS_APIKEY=${EMBEDDINGS_APIKEY:-}
+      - FIRECRAWL_API_URL=${FIRECRAWL_API_URL:-}
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+      - PYTHONWARNINGS=ignore::pydantic.PydanticDeprecatedSince211
+    restart: no
+    network_mode: "host"  # Use host networking
+    extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+
+  # Web Application
+  kb-webapp:
+    build:
+      context: .
+      dockerfile: Dockerfile.webapp
+    container_name: lamb-kb-webapp
+    ports:
+      - "9091:9091"
+    volumes:
+      - ./backend:/app
+      - kb-data:/app/data
+      - static-files:/app/static
+      - ./backend/.env:/app/.env:ro
+    environment:
+      - LAMB_API_KEY=${LAMB_API_KEY:-0p3n-w3bu!}
+      - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - EMBEDDINGS_VENDOR=${EMBEDDINGS_VENDOR:-local}
+      - EMBEDDINGS_APIKEY=${EMBEDDINGS_APIKEY:-}
+      - FIRECRAWL_API_URL=${FIRECRAWL_API_URL:-}
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+      - PYTHONWARNINGS=ignore::pydantic.PydanticDeprecatedSince211
+      - LAMB_WEBAPP_HOST=0.0.0.0
+      - LAMB_WEBAPP_PORT=9091
+    restart: no
+    depends_on:
+      - kb-server
+    network_mode: "host"  # Use host networking
+    extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+
+volumes:
+  kb-data:
+    name: lamb-kb-data
+  static-files:
+    name: lamb-static-files
