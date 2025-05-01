@@ -1,71 +1,82 @@
 """
-Domain-specific exceptions for the Lamb KB Server.
+Exception hierarchy for the Lamb KB Server.
 
-This module defines custom exception classes that represent domain-specific errors,
-keeping them separate from HTTP or transport-specific error handling.
+*No* transport-level (FastAPI) classes are imported here – keep those concerns
+in the presentation layer.
 """
 
+# ───────────────────────────── base classes ────────────────────────────── #
 
-class DomainException(Exception):
-    """Base exception for all domain-specific errors."""
+class AppException(Exception):
+    """Root of **all** application errors."""
+    pass
+
+
+# ─────────────────────────── domain / business ────────────────────────── #
+
+class DomainException(AppException):
+    """Errors that make sense inside the domain language."""
     pass
 
 
 class ResourceNotFoundException(DomainException):
-    """Raised when a requested resource cannot be found."""
-    pass
-
-
-class ValidationException(DomainException):
-    """Raised when input validation fails."""
+    """The requested entity does not exist."""
     pass
 
 
 class ResourceAlreadyExistsException(DomainException):
-    """Raised when trying to create a resource that already exists."""
+    """A unique key is duplicated (conflict)."""
+    pass
+
+
+class ValidationException(DomainException):
+    """Request payload / parameters do not satisfy domain constraints."""
     pass
 
 
 class ConfigurationException(DomainException):
-    """Raised when there's an issue with configuration parameters."""
+    """Server-side configuration is invalid or incomplete."""
     pass
 
 
 class ProcessingException(DomainException):
-    """Raised when processing a file or data fails."""
+    """Generic failure while applying business logic."""
     pass
 
 
-class AuthenticationException(DomainException):
-    """Raised when authentication fails."""
+class AuthenticationException(DomainException):   # optional, keep if used
     pass
 
 
-class AuthorizationException(DomainException):
-    """Raised when authorization fails."""
+class AuthorizationException(DomainException):    # optional, keep if used
     pass
 
 
-class DatabaseException(DomainException):
-    """Raised when there's a database error."""
+# ──────────────────────── repository / infrastructure ─────────────────── #
+
+class RepositoryException(AppException):
+    """Base for data-access and infrastructure errors."""
     pass
 
 
-class PluginNotFoundException(DomainException):
-    """Raised when a requested plugin cannot be found."""
+class DataIntegrityException(RepositoryException):
+    """Constraint violation (unique, FK, …)."""
     pass
 
 
-class ExternalServiceException(DomainException):
-    """Raised when an external service call fails."""
+class DatabaseException(RepositoryException):
+    """Unexpected DB error that is *not* a constraint violation."""
     pass
 
 
-class FileNotFoundException(DomainException):
-    """Raised when a file cannot be found."""
+class ExternalServiceException(RepositoryException):
+    """A call to a third-party service failed (network, SDK…)."""
     pass
 
 
-class InvalidParameterException(ValidationException):
-    """Raised when a parameter is invalid."""
-    pass
+# ────────────────────────── aliases (optional) ────────────────────────── #
+# These preserve backwards compatibility with names you already used.
+
+FileNotFoundException       = ResourceNotFoundException
+PluginNotFoundException     = ResourceNotFoundException
+InvalidParameterException   = ValidationException

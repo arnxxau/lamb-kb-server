@@ -41,6 +41,23 @@ class CollectionsService:
     """Service for handling collection-related API endpoints."""
     
     @staticmethod
+    def get_database_status():
+        """Get the status of all databases.
+        
+        Returns:
+            A dictionary with database status information
+            
+        Raises:
+            ProcessingException: If there's an error getting the database status
+        """
+        try:
+            return CollectionRepository.get_database_status()
+        except Exception as e:
+            # Wrap all exceptions from the repository layer in ProcessingException
+            logger.error(f"Failed to get database status: {str(e)}", exc_info=True)
+            raise ProcessingException(f"Failed to get database status: {str(e)}")
+    
+    @staticmethod
     def resolve_embeddings_model(embeddings_model: EmbeddingsModel) -> Dict[str, Any]:
         """Resolve default values in embeddings model configuration.
         
@@ -79,12 +96,11 @@ class CollectionsService:
                 )
         resolved_config["model"] = model
         
-        # Resolve API key (optional)
         api_key = model_info.get("apikey")
         if api_key == "default":
             api_key = os.getenv("EMBEDDINGS_APIKEY", "")
-        
-        # Only log whether we have a key or not, never log the key itself or its contents
+    
+
         if vendor == "openai":
             logger.info(f"Using OpenAI API key: {'[PROVIDED]' if api_key else '[MISSING]'}")
             
@@ -101,100 +117,53 @@ class CollectionsService:
         if api_endpoint:  # Only add if not None
             resolved_config["api_endpoint"] = api_endpoint
             
-        # Log the resolved configuration
+            
         logger.info(f"Resolved embeddings config: {resolved_config}")
         
         return resolved_config
     
     @staticmethod
+     @staticmethod
     def create_collection(
-        collection: CollectionCreate,
+        collection: "CollectionCreate",
     ) -> Dict[str, Any]:
-        """Create a new knowledge base collection.
-        
-        Args:
-            collection: Collection data from request body
-            
-        Returns:
-            The created collection
-            
-        Raises:
-            ResourceAlreadyExistsException: If collection with same name already exists
-            ValidationException: If visibility value is invalid
-            ConfigurationException: If embeddings model configuration is invalid
-            ProcessingException: If collection creation fails
         """
-        # Check if collection with this name already exists
-        existing = CollectionRepository.get_collection_by_name(collection.name)
-        if existing:
-            raise ResourceAlreadyExistsException(
-                f"Collection with name '{collection.name}' already exists"
-            )
-        
-        # Convert visibility string to enum
-        try:
-            visibility = Visibility(collection.visibility)
-        except ValueError:
-            raise ValidationException(
-                f"Invalid visibility value: {collection.visibility}. Must be 'private' or 'public'."
-            )
-        
-        # Create the collection
-        try:
-            # Handle the embeddings model configuration
-            embeddings_model = {}
-            if collection.embeddings_model:
-                # Resolve default values
-                resolved_config = CollectionsService.resolve_embeddings_model(collection.embeddings_model)
-                
-                # We'll still validate the embeddings model configuration
-                try:
-                    # Create a temporary DB collection record for validation
-                    temp_collection = Collection(id=-1, name="temp_validation", 
-                                              owner="system", description="Validation only", 
-                                              embeddings_model=resolved_config)
-                    
-                    logger.debug(f"Validating {resolved_config.get('vendor')} embeddings with model: {resolved_config.get('model')}")
-                    
-                    # Try to create an embedding function with this configuration
-                    # This will validate if the embeddings model configuration is valid
-                    embedding_function = get_embedding_function(temp_collection)
-                    
-                    # Test the embedding function with a simple text
-                    test_result = embedding_function(["Test embedding validation"])
-                    logger.info(f"Embeddings validation successful, dimensions: {len(test_result[0])}")
+        Validate input, enforce business rules, and delegate creation to the repository.
 
-                except Exception as emb_error:
-                    logger.error(f"Embeddings model validation failed: {str(emb_error)}")
-                    raise ConfigurationException(
-                        f"Embeddings model validation failed: {str(emb_error)}. Please check your configuration."
-                    )
-                
-                embeddings_model = resolved_config
-            
-            # Create the collection in both databases
-            db_collection = CollectionRepository.create_collection(
-                name=collection.name,
-                owner=collection.owner,
-                description=collection.description,
-                visibility=visibility,
-                embeddings_model=embeddings_model
-            )
+        By resolving the embedding function in the service, we encapsulate all business logic—
+        including vendor/model validation and dry‑run checks—outside of the repository. 
+        The service decides *which* function to use, while the repository only consumes 
+        a pre‑validated callable for persistence and ChromaDB operations, maintaining 
+        a clear separation of concerns.
 
-            # Verify the collection was created successfully in both databases
-            if not db_collection.chromadb_uuid:
-                raise ProcessingException(
-                    "Collection was created but ChromaDB UUID was not stored"
-                )
-            
-            return db_collection
-        except (ResourceAlreadyExistsException, ValidationException, ConfigurationException) as e:
-            # Re-raise domain exceptions as-is
-            raise
-        except Exception as e:
-            # Wrap unexpected errors in ProcessingException
-            logger.error(f"Failed to create collection: {str(e)}", exc_info=True)
-            raise ProcessingException(f"Failed to create collection: {str(e)}")
+        Returns:
+            A plain dict representing the created collection
+        """
+
+        visibility_enum = Visibility(collection.visibility)
+
+
+        embeddings_model = resolve_embeddings_model(collection.embeddings_model or {})
+        embedding_function = get_embedding_function_by_params(
+            vendor=embeddings_model.get("vendor"),
+            model_name=embeddings_model.get("model"),
+            api_key=embeddings_model.get("apikey", ""),
+            api_endpoint=embeddings_model.get("api_endpoint", "")
+        )
+
+
+        _ = embedding_function(["validation test"])
+
+
+        return CollectionRepository.create_collection(
+            name=collection.name,
+            owner=collection.owner,
+            description=collection.description,
+            visibility=visibility_enum,
+            embeddings_model=embeddings_model,
+            embedding_function=embedding_function
+        )
+
     
     @staticmethod
     def list_collections(
@@ -217,7 +186,7 @@ class CollectionsService:
         Raises:
             ValidationException: If invalid visibility value is provided
         """
-        # Convert visibility string to enum if provided
+
         visibility_enum = None
         if visibility:
             try:
@@ -227,7 +196,6 @@ class CollectionsService:
                     f"Invalid visibility value: {visibility}. Must be 'private' or 'public'."
                 )
         
-        # Get collections with filtering
         try:
             collections = CollectionRepository.list_collections(
                 owner=owner,
@@ -236,13 +204,13 @@ class CollectionsService:
                 limit=limit
             )
             
-            # Get total count from repository
             total = len(collections)
             
             return {
                 "total": total,
                 "items": collections
             }
+
         except Exception as e:
             logger.error(f"Failed to list collections: {str(e)}", exc_info=True)
             raise ProcessingException(f"Failed to list collections: {str(e)}")
@@ -285,11 +253,7 @@ class CollectionsService:
             ResourceNotFoundException: If collection not found
             ValidationException: If status is invalid
         """
-        # Check if collection exists
-        collection = CollectionRepository.get_collection(collection_id)
-        if not collection:
-            raise ResourceNotFoundException(f"Collection with ID {collection_id} not found")
-        
+
         # Validate status if provided
         if status:
             try:
@@ -298,8 +262,8 @@ class CollectionsService:
                 raise ValidationException(
                     f"Invalid status: {status}. Must be one of: completed, processing, failed, deleted"
                 )
-        
-        # Get files from repository
+
+
         try:
             return CollectionRepository.list_files(collection_id, status)
         except Exception as e:
@@ -324,7 +288,7 @@ class CollectionsService:
             ResourceNotFoundException: If file not found
             ValidationException: If status is invalid
         """
-        # Validate status
+
         try:
             file_status = FileStatus(status)
         except ValueError:
@@ -332,7 +296,7 @@ class CollectionsService:
                 f"Invalid status: {status}. Must be one of: completed, processing, failed, deleted"
             )
         
-        # Update file status
+
         result = CollectionRepository.update_file_status(file_id, file_status)
         if not result:
             raise ResourceNotFoundException(f"File with ID {file_id} not found")
@@ -350,28 +314,16 @@ class CollectionsService:
         endpoint: Optional[str] = None,
         apikey: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Update a collection's details.
-        
-        Args:
-            collection_id: ID of the collection to update
-            name: New collection name
-            description: New description
-            visibility: New visibility setting ('private' or 'public')
-            model: New embeddings model name (changing is not supported)
-            vendor: New embeddings vendor (changing is not supported)
-            endpoint: New embeddings-model endpoint
-            apikey: New embeddings-model API key
-            
-        Returns:
-            Updated collection details
-            
+        """
+        Validate inputs, enforce business rules, and delegate persistence to the repository.
+
         Raises:
             ResourceNotFoundException: If collection not found
-            ValidationException: If visibility value is invalid
-            ProcessingException: If update fails
+            ValidationException: If invalid parameters
+            ProcessingException: For unexpected failures
         """
-        # Validate visibility if provided
-        visibility_enum = None
+        # 1. Validate visibility
+        visibility_enum: Optional[Visibility] = None
         if visibility:
             try:
                 visibility_enum = Visibility(visibility)
@@ -379,57 +331,55 @@ class CollectionsService:
                 raise ValidationException(
                     f"Invalid visibility value: {visibility}. Must be 'private' or 'public'."
                 )
-        
+
+        # 2. Fetch existing collection
+        existing = CollectionRepository.get_collection(collection_id)
+        if not existing:
+            raise ResourceNotFoundException(f"Collection with ID {collection_id} not found")
+
+        # 3. Prepare embeddings_model merge
+        current_conf = existing.embeddings_model or {}
+        new_conf = current_conf.copy()
+        if endpoint is not None:
+            new_conf['api_endpoint'] = endpoint
+        if apikey is not None:
+            new_conf['apikey'] = apikey
+
+        # Warn if trying to change model or vendor
+        existing_model = current_conf.get('model')
+        existing_vendor = current_conf.get('vendor')
+        if model is not None and model != existing_model:
+            logger.warning(
+                f"Changing embeddings model from '{existing_model}' to '{model}' is not supported and will be ignored."
+            )
+        if vendor is not None and vendor != existing_vendor:
+            logger.warning(
+                f"Changing embeddings vendor from '{existing_vendor}' to '{vendor}' is not supported and will be ignored."
+            )
+
+        # Determine rename parameters
+        old_name = existing.name
+        rename_from = old_name if name and name != old_name else None
+        rename_to = name if name and name != old_name else None
+
+        # 4. Delegate to repository with explicit params
         try:
-            # First get the existing collection to check model/vendor
-            existing_collection = CollectionRepository.get_collection(collection_id)
-            if not existing_collection:
-                raise ResourceNotFoundException(f"Collection with ID {collection_id} not found")
-            
-            # Handle embeddings model updates with business rules
-            embeddings_model_updates = {}
-            if endpoint is not None:
-                embeddings_model_updates['api_endpoint'] = endpoint
-            if apikey is not None:
-                embeddings_model_updates['apikey'] = apikey
-            
-            # Check if trying to change model or vendor
-            existing_model = None
-            existing_vendor = None
-            if isinstance(existing_collection, dict) and 'embeddings_model' in existing_collection:
-                existing_model = existing_collection['embeddings_model'].get('model')
-                existing_vendor = existing_collection['embeddings_model'].get('vendor')
-            
-            # Business rule: Cannot change model or vendor
-            if model is not None and model != existing_model:
-                logger.warning(f"Changing embeddings model from '{existing_model}' to '{model}' is not supported and will be ignored.")
-                # Don't add to updates
-            
-            if vendor is not None and vendor != existing_vendor:
-                logger.warning(f"Changing embeddings vendor from '{existing_vendor}' to '{vendor}' is not supported and will be ignored.")
-                # Don't add to updates
-                
-            # Call repository method with filtered updates
-            updated_collection = CollectionRepository.update_collection(
+            updated = CollectionRepository.update_collection(
                 collection_id=collection_id,
                 name=name,
                 description=description,
                 visibility=visibility_enum,
-                embeddings_model_updates=embeddings_model_updates
+                embeddings_model=new_conf,
+                rename_from=rename_from,
+                rename_to=rename_to
             )
-            
-            if not updated_collection:
+            if not updated:
                 raise ResourceNotFoundException(f"Collection with ID {collection_id} not found")
                 
-            # Convert to dict if it's a model instance
-            if hasattr(updated_collection, 'to_dict'):
-                return updated_collection.to_dict()
-            return updated_collection
-            
+            return updated
+
         except (ResourceNotFoundException, ValidationException):
-            # Re-raise domain exceptions
             raise
         except Exception as e:
-            # Log the error and wrap in ProcessingException
             logger.error(f"Failed to update collection: {str(e)}", exc_info=True)
             raise ProcessingException(f"Failed to update collection: {str(e)}")

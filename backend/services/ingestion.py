@@ -30,7 +30,6 @@ from exceptions import (
     ValidationException,
     ProcessingException,
     PluginNotFoundException,
-    FileNotFoundException,
     ConfigurationException
 )
 

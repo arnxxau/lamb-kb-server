@@ -457,7 +457,7 @@ async def root(token: str = Depends(verify_token)):
     curl -X GET 'http://localhost:9090/health'
     ```
     """,
-    tags=["System"],
+    tags=["System"],q
     responses={
         200: {"description": "Server is healthy and running"}
     }
@@ -492,35 +492,18 @@ async def health_check():
         401: {"description": "Unauthorized - Invalid or missing authentication token"}
     }
 )
-async def database_status(token: str = Depends(verify_token), db: Session = Depends(get_db)):
+async def database_status(token: str = Depends(verify_token)):
     """Get the status of the SQLite and ChromaDB databases.
     
     Returns:
         A dictionary with database status information
     """
     try:
-        # Re-initialize databases to get fresh status
-        db_status = init_databases()
-        
-        # Count collections in SQLite
-        collections_count = db.query(Collection).count()
-        
-        # Get ChromaDB collections
-        chroma_client = get_chroma_client()
-        chroma_collections = chroma_client.list_collections()
-        
-        return {
-            "sqlite_status": {
-                "initialized": db_status["sqlite_initialized"],
-                "schema_valid": db_status["sqlite_schema_valid"],
-                "errors": db_status.get("errors", [])
-            },
-            "chromadb_status": {
-                "initialized": db_status["chromadb_initialized"],
-                "collections_count": len(chroma_collections)
-            },
-            "collections_count": collections_count
-        }
+        # Use the service layer to get database status
+        return CollectionsService.get_database_status()
+    except DomainException as e:
+        # Domain exceptions will be caught by exception handlers
+        raise
     except Exception as e:
         logger.error(f"Failed to get database status: {str(e)}", exc_info=True)
         raise HTTPException(

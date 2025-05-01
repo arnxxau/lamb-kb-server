@@ -162,3 +162,5 @@ def init_databases() -> Dict[str, Any]:
         status["errors"].append(f"Error initializing databases: {str(e)}")
     
     return status
+
+

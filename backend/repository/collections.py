@@ -7,6 +7,7 @@ This module provides repository functions for managing collections in both SQLit
 import os
 import json
 import logging
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 import chromadb
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
@@ -15,13 +16,59 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, asc
 
 from .models import Collection, Visibility, FileRegistry, FileStatus
-from .connection import get_db, get_chroma_client, get_embedding_function, get_embedding_function_by_params, SessionLocal
+from .connection import (
+    get_db,
+    get_chroma_client,
+    get_embedding_function,
+    get_embedding_function_by_params,
+    SessionLocal,
+    init_databases,
+)
+
+from exceptions import (
+    DataIntegrityException,
+    DatabaseException,
+    ExternalServiceException,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class CollectionRepository:
     """Repository for managing collections in both SQLite and ChromaDB."""
+    
+    @staticmethod
+    def get_database_status():
+        """Get the status of all databases.
+        
+        Returns:
+            A dictionary with database status information
+            
+        Raises:
+            Exception: Any error that occurs during database operations
+        """
+        db_status = init_databases()
+        db = SessionLocal()
+
+        collections_count = db.query(Collection).count()
+        
+        chroma_client = get_chroma_client()
+        chroma_collections = chroma_client.list_collections()
+        db.close()
+
+        return {
+            "sqlite_status": {
+                "initialized": db_status["sqlite_initialized"],
+                "schema_valid": db_status["sqlite_schema_valid"],
+                "errors": db_status.get("errors", [])
+            },
+            "chromadb_status": {
+                "initialized": db_status["chromadb_initialized"],
+                "collections_count": len(chroma_collections)
+            },
+            "collections_count": collections_count
+        }
+        
 
     @staticmethod
     def list_files(collection_id: int, status: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -35,25 +82,18 @@ class CollectionRepository:
             List of file registry entries
         """
         db = SessionLocal()
-        try:
-            # Query files
-            query = db.query(FileRegistry).filter(FileRegistry.collection_id == collection_id)
+        query = db.query(FileRegistry).filter(FileRegistry.collection_id == collection_id)
+
+        if status:
+            file_status = FileStatus(status)
+            query = query.filter(FileRegistry.status == file_status)
+
+        files = query.all()
+
+        db.close()
+        
+        return [file.to_dict() for file in files]
             
-            # Apply status filter if provided
-            if status:
-                try:
-                    file_status = FileStatus(status)
-                    query = query.filter(FileRegistry.status == file_status)
-                except ValueError:
-                    # Handle validation at the service level
-                    pass
-            
-            # Get results
-            files = query.all()
-            
-            return [file.to_dict() for file in files]
-        finally:
-            db.close()
             
     @staticmethod
     def update_file_status(file_id: int, status: FileStatus) -> Optional[Dict[str, Any]]:
@@ -67,103 +107,80 @@ class CollectionRepository:
             Updated file registry entry or None if not found
         """
         db = SessionLocal()
-        try:
-            file_registry = db.query(FileRegistry).filter(FileRegistry.id == file_id).first()
-            if file_registry:
-                file_registry.status = status
-                file_registry.updated_at = datetime.utcnow()
-                db.commit()
-                db.refresh(file_registry)
-                return file_registry.to_dict()
-            return None
-        finally:
+        file_registry = db.query(FileRegistry).filter(FileRegistry.id == file_id).first()
+        if file_registry:
+            file_registry.status = status
+            file_registry.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(file_registry)
+
             db.close()
+            return file_registry.to_dict()
+        db.close()
+        return None
+            
     
     @staticmethod
     def create_collection(
         name: str,
         owner: str,
-        description: Optional[str] = None,
-        visibility: Visibility = Visibility.PRIVATE,
-        embeddings_model: Optional[Dict[str, Any]] = None
-    ) -> Collection:
-        """Create a new collection in both SQLite and ChromaDB.
-        
-        Args:
-            db: SQLAlchemy database session
-            name: Name of the collection
-            owner: Owner of the collection
-            description: Optional description
-            visibility: Visibility setting (private or public)
-            embeddings_model: Optional custom embeddings model configuration
-            
-        Returns:
-            The created Collection object
+        description: Optional[str],
+        visibility: Visibility,
+        embeddings_model: Dict[str, Any],
+        embedding_function: Callable[[Any], Any]
+    ) -> Dict[str, Any]:
         """
-        # embeddings_model=None should never happen from the API
-        if embeddings_model is None:
-            error_msg = "No embeddings model configuration provided. This is required for collection creation."
-            logger.error(f"[create_collection] {error_msg}")
-            raise ValueError(error_msg)
-        
-        # Create ChromaDB collection
-        chroma_client = get_chroma_client()
-        
-        # Get the appropriate embedding function based on model configuration
-        embedding_func = None
-        if embeddings_model:
-            logger.debug(f"Using embedding config from dict - Model: {embeddings_model['model']}, Vendor: {embeddings_model['vendor']}")
-            try:
-                embedding_func = get_embedding_function_by_params(
-                    vendor=embeddings_model['vendor'],
-                    model_name=embeddings_model['model'],
-                    api_key=embeddings_model.get('apikey', ''),
-                    api_endpoint=embeddings_model.get('api_endpoint', '')
-                )
-            except Exception as e:
-                logger.error(f"Failed to create embedding function: {str(e)}")
-                raise ValueError(f"Failed to create embedding function: {str(e)}")
-        
-        # Prepare collection parameters
-        collection_params = {
-            "name": name,
-            "metadata": {
-                "hnsw:space": "cosine",
-            }
-        }
-        
-        if embedding_func:
-            collection_params["embedding_function"] = embedding_func
-        
-        try:
-            chroma_collection = chroma_client.create_collection(**collection_params)
-            logger.debug(f"Successfully created ChromaDB collection")
-            
-            # Create SQLite record with a new DB session
-            db = SessionLocal()
-            try:
-                db_collection = Collection(
-                    name=name,
-                    description=description,
-                    owner=owner,
-                    visibility=visibility,
-                    embeddings_model=embeddings_model,
-                    chromadb_uuid=str(chroma_collection.id)
-                )
-                db.add(db_collection)
-                db.commit()
-                db.refresh(db_collection)
-                return db_collection
-            except Exception as e:
-                db.rollback()
-                raise
-            finally:
-                db.close()
+        Persist a new collection in both SQLite and ChromaDB using explicit parameters,
+        and return a plain dict representation.
 
-        except Exception as e:
-            logger.error(f"Failed to create ChromaDB collection: {str(e)}")
-            raise
-    
+        Args:
+            name: Collection name
+            owner: Owner identifier
+            description: Optional text description
+            visibility: Visibility enum value
+            embeddings_model: Raw embeddings model configuration dict
+            embedding_function: Pre-resolved embedding function callable
+
+        Raises:
+            ResourceAlreadyExistsException: If a collection with the same name exists
+
+        Returns:
+            Dict representing the created collection
+        """
+        db: Session = SessionLocal()
+        try:
+            # Enforce unique name
+            if db.query(Collection).filter_by(name=name).first():
+                raise ResourceAlreadyExistsException(
+                    f"Collection with name '{name}' already exists"
+                )
+
+            # Prepare ChromaDB collection parameters
+            params: Dict[str, Any] = {"name": name, "metadata": {"hnsw:space": "cosine"}}
+            params["embedding_function"] = embedding_function
+
+            # Create in ChromaDB
+            client = get_chroma_client()
+            chroma_collection = client.create_collection(**params)
+
+            # Persist in SQL
+            db_collection = Collection(
+                name=name,
+                owner=owner,
+                description=description,
+                visibility=visibility,
+                embeddings_model=embeddings_model,
+                chromadb_uuid=str(chroma_collection.id)
+            )
+            db.add(db_collection)
+            db.commit()
+            db.refresh(db_collection)
+
+            # Return plain dict
+            return db_collection.to_dict()
+        finally:
+            db.close()
+
 
     @staticmethod
     def get_collection(collection_id: int) -> Optional[Dict[str, Any]]:
@@ -203,22 +220,6 @@ class CollectionRepository:
             db.close()
     
     @staticmethod
-    def get_collection_by_chromadb_uuid(chromadb_uuid: str) -> Optional[Collection]:
-        """Get a collection by ChromaDB UUID.
-        
-        Args:
-            chromadb_uuid: ChromaDB UUID of the collection to retrieve
-            
-        Returns:
-            The Collection object if found, None otherwise
-        """
-        db = SessionLocal()
-        try:
-            return db.query(Collection).filter(Collection.chromadb_uuid == chromadb_uuid).first()
-        finally:
-            db.close()
-    
-    @staticmethod
     def list_collections(
         owner: Optional[str] = None,
         visibility: Optional[Visibility] = None,
@@ -238,97 +239,80 @@ class CollectionRepository:
         """
         db = SessionLocal()
         try:
-            # Build query
             query = db.query(Collection)
             
-            # Apply filters if provided
             if owner:
                 query = query.filter(Collection.owner == owner)
             if visibility:
                 query = query.filter(Collection.visibility == visibility)
             
-            # Apply pagination
             collections = query.offset(skip).limit(limit).all()
 
             return [col.to_dict() for col in collections]
+
         finally:
             db.close()
-    
+
+
     @staticmethod
     def update_collection(
         collection_id: int,
         name: Optional[str] = None,
         description: Optional[str] = None,
         visibility: Optional[Visibility] = None,
-        model: Optional[str] = None,
-        vendor: Optional[str] = None,
-        endpoint: Optional[str] = None,
-        apikey: Optional[str] = None,
-        embeddings_model_updates: Optional[Dict[str, Any]] = None
-    ) -> Optional[Collection]:
+        embeddings_model: Optional[Dict[str, Any]] = None,
+        rename_from: Optional[str] = None,
+        rename_to: Optional[str] = None
+    ):
         """
-        Update a collection's SQLite record and rename ChromaDB collection if needed.
+        Apply provided field updates to the Collection record and optionally rename the ChromaDB collection.
 
         Args:
             collection_id: ID of the collection to update
             name: New collection name
             description: New description
             visibility: New visibility setting
-            model: New embeddings model name (only for backward compatibility)
-            vendor: New embeddings vendor (only for backward compatibility)
-            endpoint: New embeddings-model endpoint (only for backward compatibility)
-            apikey: New embeddings-model API key (only for backward compatibility)
-            embeddings_model_updates: Dict of updates to apply to the embeddings_model field
-        
+            embeddings_model: Full embeddings_model dict to set
+            rename_from: Old Chroma collection name (if rename needed)
+            rename_to: New Chroma collection name
+
         Returns:
-            Updated Collection or None if not found
+            The updated Collection instance, or None if not found
         """
-        db = SessionLocal()
+        db: Session = SessionLocal()
         try:
             db_collection = db.query(Collection).get(collection_id)
             if not db_collection:
                 return None
 
-            old_name = db_collection.name
-
-            # Update basic properties
+            # Apply all non-None field updates
             if name is not None:
                 db_collection.name = name
             if description is not None:
                 db_collection.description = description
             if visibility is not None:
                 db_collection.visibility = visibility
-
-            # Update embeddings model if provided
-            if embeddings_model_updates:
-                current_conf = db_collection.embeddings_model or {}
-                current_conf.update(embeddings_model_updates)
-                db_collection.embeddings_model = current_conf
-            # For backward compatibility (will be processed by service layer)
-            else:
-                current_conf = db_collection.embeddings_model or {}
-                # Apply endpoint and API key if provided
-                if endpoint is not None:
-                    current_conf['api_endpoint'] = endpoint
-                if apikey is not None:
-                    current_conf['apikey'] = apikey
-                db_collection.embeddings_model = current_conf
+            if embeddings_model is not None:
+                db_collection.embeddings_model = embeddings_model
 
             db.commit()
             db.refresh(db_collection)
 
-            # Update ChromaDB collection name if it changed
-            if name and name != old_name:
+            # Handle ChromaDB rename if requested
+            if rename_from and rename_to:
                 client = get_chroma_client()
-                chroma_col = client.get_collection(old_name)
-                chroma_col.modify(name=name)
+                chroma_col = client.get_collection(rename_from)
+                chroma_col.modify(name=rename_to)
 
-            return db_collection
-        except Exception as e:
+            return db_collection.to_dict()
+
+        except Exception:
             db.rollback()
             raise
+
         finally:
             db.close()
+
 
     
     @staticmethod
@@ -367,135 +351,45 @@ class CollectionRepository:
         finally:
             db.close()
             
-    @staticmethod
-    def get_file_content(file_id: int) -> Dict[str, Any]:
-        """Get the content of a file from file registry.
-        
-        Args:
-            file_id: ID of the file registry entry
-            
-        Returns:
-            Content of the file with metadata
-            
-        Raises:
-            ValueError: If file or collection not found or content cannot be retrieved
-        """
-        db = SessionLocal()
-        try:
-            # Get file registry entry
-            file_registry = db.query(FileRegistry).filter(FileRegistry.id == file_id).first()
-            if not file_registry:
-                raise ValueError(f"File with ID {file_id} not found")
-            
-            # Get the file content based on the plugin type
-            file_content = ""
-            content_type = "text"
-            
-            # Get collection for any file type
-            collection = db.query(Collection).filter(Collection.id == file_registry.collection_id).first()
-            if not collection:
-                raise ValueError(f"Collection with ID {file_registry.collection_id} not found")
-                
-            # Get database content from ChromaDB
-            # Get ChromaDB client and collection
-            chroma_client = get_chroma_client()
-            chroma_collection = chroma_client.get_collection(name=collection.name)
-            
-            # Get the source filename/url
-            source = file_registry.original_filename
-            
-            # Get the file type and plugin name
-            plugin_name = file_registry.plugin_name
-            
-            # Set the appropriate file type based on extension or plugin
-            original_extension = ""
-            if "." in source:
-                original_extension = source.split(".")[-1].lower()
-                
-            # Determine content type based on file extension or plugin name
-            if plugin_name == "url_ingest" or source.startswith(("http://", "https://")):
-                content_type = "markdown"  # URL content from firecrawl is markdown
-            elif original_extension in ["md", "markdown"]:
-                content_type = "markdown"
-            elif original_extension in ["txt", "text"]:
-                content_type = "text"
-            else:
-                content_type = "text"  # Default to text
-                
-            # Query ChromaDB for documents with this source
-            results = chroma_collection.get(
-                where={"source": source}, 
-                include=["documents", "metadatas"]
-            )
-            
-            if not results or not results["documents"] or len(results["documents"]) == 0:
-                # Try other fields if "source" doesn't work
-                results = chroma_collection.get(
-                    where={"filename": source}, 
-                    include=["documents", "metadatas"]
-                )
-                
-            if not results or not results["documents"] or len(results["documents"]) == 0:
-                # For regular files, the source field might be the file path
-                # Try to find by just the filename part
-                import os
-                filename = os.path.basename(source)
-                if filename:
-                    results = chroma_collection.get(
-                        where={"filename": filename}, 
-                        include=["documents", "metadatas"]
-                    )
-                    
-            if not results or not results["documents"] or len(results["documents"]) == 0:
-                # If we still haven't found it, check if there's a physical file we can read
-                if os.path.exists(file_registry.file_path) and os.path.isfile(file_registry.file_path):
-                    try:
-                        with open(file_registry.file_path, 'r', encoding='utf-8') as f:
-                            file_content = f.read()
-                            
-                        return {
-                            "file_id": file_id,
-                            "original_filename": source,
-                            "content": file_content,
-                            "content_type": content_type,
-                            "chunk_count": 1,
-                            "timestamp": file_registry.updated_at.isoformat() if file_registry.updated_at else None
-                        }
-                    except Exception as e:
-                        logger.error(f"Error reading file from disk: {str(e)}", exc_info=True)
-                        # Continue to error handling
-                
-                raise ValueError(f"No content found for file: {source}")
-            
-            # Reconstruct the content from chunks
-            # First sort by chunk_index
-            chunk_docs = []
-            for i, doc in enumerate(results["documents"]):
-                if i < len(results["metadatas"]) and results["metadatas"][i]:
-                    metadata = results["metadatas"][i]
-                    chunk_docs.append({
-                        "text": doc,
-                        "index": metadata.get("chunk_index", i),
-                        "count": metadata.get("chunk_count", 0)
-                    })
-            
-            # Sort chunks by index
-            chunk_docs.sort(key=lambda x: x["index"])
-            
-            # Join all chunks
-            full_content = "\n".join(doc["text"] for doc in chunk_docs)
-            
-            # Return content with metadata
-            return {
-                "file_id": file_id,
-                "original_filename": source,
-                "content": full_content,
-                "content_type": content_type,
-                "chunk_count": len(chunk_docs),
-                "timestamp": file_registry.updated_at.isoformat() if file_registry.updated_at else None
-            }
-        except Exception as e:
-            logger.error(f"Error retrieving file content: {str(e)}", exc_info=True)
-            raise ValueError(f"Failed to retrieve file content: {str(e)}")
-        finally:
-            db.close()
+  
+@staticmethod
+def get_file_content(file_id: int) -> str:
+    """
+    Reconstruct the original file from its ChromaDB chunks.
+
+    Args:
+        file_id: primary-key ID in FileRegistry.
+
+    Returns:
+        The complete file as a single UTF-8 string.
+
+    Raises:
+        ValueError if the file or its chunks cannot be found.
+    """
+    # --- 1. SQL look-ups ----------------------------------------------------
+    with SessionLocal() as db:
+        registry = db.get(FileRegistry, file_id)
+        if not registry:
+            raise ValueError(f"file {file_id} not found")
+
+        collection_row = db.get(Collection, registry.collection_id)
+        if not collection_row:
+            raise ValueError(f"collection {registry.collection_id} not found")
+
+    # --- 2. Fetch chunks in one call ---------------------------------------
+    chroma = get_chroma_client()
+    col    = chroma.get_collection(collection_row.name)
+
+    res = col.get(
+        where   = {"file_id": file_id},       # indexed filter
+        include = ["documents", "metadatas"]  # no embeddings
+    )
+    if not res["documents"]:
+        raise ValueError(f"no chunks stored for file {file_id}")
+
+    # --- 3. Reassemble ------------------------------------------------------
+    chunks = sorted(
+        zip(res["documents"], res["metadatas"]),
+        key=lambda p: p[1].get("chunk_index", 0)
+    )
+    return "\n".join(text for text, _ in chunks)
