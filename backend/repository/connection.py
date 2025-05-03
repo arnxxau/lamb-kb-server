@@ -1,7 +1,3 @@
-"""
-Database connection module for SQLite and ChromaDB.
-"""
-
 import os
 import json
 from pathlib import Path
@@ -15,21 +11,17 @@ from sqlalchemy.orm import sessionmaker, Session
 
 from .models import Base, Collection, Visibility
 
-# Database paths
 DATA_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / "data"
 SQLITE_DB_PATH = DATA_DIR / "lamb-kb-server.db"
 CHROMA_DB_PATH = DATA_DIR / "chromadb"
 
-# Ensure the directories exist
 DATA_DIR.mkdir(exist_ok=True)
 CHROMA_DB_PATH.mkdir(exist_ok=True)
 
-# Create SQLite engine
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{SQLITE_DB_PATH}"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Create ChromaDB client
 chroma_client = chromadb.PersistentClient(
     path=str(CHROMA_DB_PATH),
     settings=ChromaSettings(
@@ -39,8 +31,7 @@ chroma_client = chromadb.PersistentClient(
 )
 
 
-def get_embedding_function_by_params(vendor: str, model_name: str, api_key: str = "", api_endpoint: str = ""):
-    """Get an embedding function based on vendor and model parameters."""
+def _get_embedding_function_by_params(vendor: str, model_name: str, api_key: str = "", api_endpoint: str = ""):
     vendor = vendor.lower()
     
     if vendor in ("ollama", "local"):
@@ -56,11 +47,10 @@ def get_embedding_function_by_params(vendor: str, model_name: str, api_key: str 
         return OpenAIEmbeddingFunction(**kwargs)
     
     else:
-        raise ValueError(f"Unsupported embedding vendor: {vendor}")
+        return None
 
 
 def get_db() -> Session:
-    """Get a database session."""
     db = SessionLocal()
     try:
         yield db
@@ -69,63 +59,62 @@ def get_db() -> Session:
 
 
 def get_chroma_client() -> chromadb.PersistentClient:
-    """Get the ChromaDB client."""
     return chroma_client
 
 
 def init_sqlite_db() -> None:
-    """Initialize the SQLite database."""
     Base.metadata.create_all(bind=engine)
 
 
 def get_embedding_function(collection_id_or_obj: Union[int, Collection, Dict[str, Any]]) -> Callable:
-    """Get the embedding function for a collection by its ID or Collection object."""
     db = next(get_db())
     
-    try:
-        # Handle dict case first
-        if isinstance(collection_id_or_obj, dict):
-            if 'embeddings_model' in collection_id_or_obj:
-                embedding_config = collection_id_or_obj['embeddings_model']
-                return get_embedding_function_by_params(
-                    embedding_config.get("vendor"),
-                    embedding_config.get("model"),
-                    embedding_config.get("apikey"),
-                    embedding_config.get("api_endpoint")
-                )
-            collection_id = collection_id_or_obj.get('id')
-            if not collection_id:
-                raise ValueError("Collection dictionary must contain an 'id' field")
-            collection = db.query(Collection).filter(Collection.id == collection_id).first()
-        # Handle Collection object case
-        elif isinstance(collection_id_or_obj, Collection):
-            collection = collection_id_or_obj
-        # Handle integer ID case
-        elif isinstance(collection_id_or_obj, int):
-            collection = db.query(Collection).filter(Collection.id == collection_id_or_obj).first()
-        else:
-            raise ValueError(f"Expected Collection object, dictionary or ID")
-            
-        if not collection:
-            raise ValueError(f"Collection not found")
-            
-        # Extract embedding configuration
-        embedding_config = json.loads(collection.embeddings_model) if isinstance(collection.embeddings_model, str) else collection.embeddings_model
-        
-        # Use the helper function to get the actual embedding function
-        return get_embedding_function_by_params(
-            embedding_config.get("vendor"),
-            embedding_config.get("model"),
-            embedding_config.get("apikey"),
-            embedding_config.get("api_endpoint")
-        )
-        
-    finally:
+    # Handle dict case first
+    if isinstance(collection_id_or_obj, dict):
+        if 'embeddings_model' in collection_id_or_obj:
+            embedding_config = collection_id_or_obj['embeddings_model']
+            db.close()
+            return _get_embedding_function_by_params(
+                embedding_config.get("vendor"),
+                embedding_config.get("model"),
+                embedding_config.get("apikey"),
+                embedding_config.get("api_endpoint")
+            )
+        collection_id = collection_id_or_obj.get('id')
+        if not collection_id:
+            db.close()
+            return None
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+    # Handle Collection object case
+    elif isinstance(collection_id_or_obj, Collection):
+        collection = collection_id_or_obj
+    # Handle integer ID case
+    elif isinstance(collection_id_or_obj, int):
+        collection = db.query(Collection).filter(Collection.id == collection_id_or_obj).first()
+    else:
         db.close()
+        return None
+        
+    if not collection:
+        db.close()
+        return None
+        
+    # Extract embedding configuration
+    embedding_config = json.loads(collection.embeddings_model) if isinstance(collection.embeddings_model, str) else collection.embeddings_model
+    
+    # Use the helper function to get the actual embedding function
+    result = _get_embedding_function_by_params(
+        embedding_config.get("vendor"),
+        embedding_config.get("model"),
+        embedding_config.get("apikey"),
+        embedding_config.get("api_endpoint")
+    )
+    
+    db.close()
+    return result
 
 
-def check_sqlite_schema() -> bool:
-    """Check if the SQLite database schema is compatible."""
+def _check_sqlite_schema() -> bool:
     inspector = inspect(engine)
     
     if "collections" not in inspector.get_table_names():
@@ -138,7 +127,6 @@ def check_sqlite_schema() -> bool:
 
 
 def init_databases() -> Dict[str, Any]:
-    """Initialize all databases and perform sanity checks."""
     status = {
         "sqlite_initialized": False,
         "sqlite_schema_valid": False,
@@ -146,21 +134,15 @@ def init_databases() -> Dict[str, Any]:
         "errors": []
     }
     
-    try:
-        status["sqlite_schema_valid"] = check_sqlite_schema()
-        
-        if not status["sqlite_schema_valid"]:
-            status["errors"].append("SQLite schema is not compatible")
-        
-        init_sqlite_db()
-        status["sqlite_initialized"] = True
-        
-        status["chromadb_collections"] = len(chroma_client.list_collections())
-        status["chromadb_initialized"] = True
-        
-    except Exception as e:
-        status["errors"].append(f"Error initializing databases: {str(e)}")
+    status["sqlite_schema_valid"] = _check_sqlite_schema()
+    
+    if not status["sqlite_schema_valid"]:
+        status["errors"].append("SQLite schema is not compatible")
+    
+    init_sqlite_db()
+    status["sqlite_initialized"] = True
+    
+    status["chromadb_collections"] = len(chroma_client.list_collections())
+    status["chromadb_initialized"] = True
     
     return status
-
-
